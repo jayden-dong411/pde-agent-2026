@@ -101,6 +101,16 @@ src/pde_agent/
 
 Claude 写的求解器代码会在本机运行。静态检查和独立进程能挡住常见的意外，但不是安全沙箱。入库前请看一下 `~/.pde_agent/skills/` 里的代码，最好在容器或虚拟环境里跑学习流程。
 
+## 版本和更新日志
+
+每个版本都发布在 [GitHub Releases](https://github.com/jayden-dong411/pde-agent-2026/releases)，每一版的改动写在 [CHANGELOG.md](CHANGELOG.md)。
+
+发新版本的步骤：
+
+1. 改 `src/pde_agent/__init__.py` 里的 `__version__`；
+2. 在 `CHANGELOG.md` 最上面加一节 `## v版本号 — 日期`，写清这一版改了什么（没写的话 CI 不通过）；
+3. 合并到 `main` 后，GitHub Actions 会自动跑测试、打包，并用这一节内容发布 Release。
+
 ## 路线图
 
 - [x] 基础方程、自我验证、经验记忆、技能库、课程表

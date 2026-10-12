@@ -8,6 +8,7 @@ import math
 import sys
 from pathlib import Path
 
+from . import __version__
 from .agent import PDEAgent
 from .curriculum import basic_curriculum, frontier_lessons, run_curriculum
 from .llm import LLMError
@@ -119,6 +120,7 @@ def cmd_skills(args) -> int:
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="pde-agent", description="会学习进化的 PDE 求解 agent")
+    parser.add_argument("--version", action="version", version=f"%(prog)s {__version__}")
     parser.add_argument("--home", help="经验和技能的存放目录（默认 ~/.pde_agent 或 $PDE_AGENT_HOME）")
     parser.add_argument("--model", default="claude-opus-5-5", help="Claude 模型")
     parser.add_argument("--no-explore", action="store_true", help="只用已知最好的方法，不尝试新方法")

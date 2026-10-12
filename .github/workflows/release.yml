@@ -1,0 +1,55 @@
+name: release
+
+# Publishes a GitHub Release whenever main carries a version (``__version__``
+# in src/pde_agent/__init__.py) that has no release yet. The notes are that
+# version's section of CHANGELOG.md; the wheel and sdist are attached.
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency: release
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - name: Find the version
+        id: version
+        run: |
+          version="$(python scripts/release_notes.py --version)"
+          echo "tag=v${version}" >> "$GITHUB_OUTPUT"
+          if gh release view "v${version}" > /dev/null 2>&1; then
+            echo "exists=true" >> "$GITHUB_OUTPUT"
+            echo "v${version} is already released; nothing to do"
+          else
+            echo "exists=false" >> "$GITHUB_OUTPUT"
+          fi
+      - name: Write release notes
+        if: steps.version.outputs.exists == 'false'
+        run: python scripts/release_notes.py > release-notes.md
+      - name: Test
+        if: steps.version.outputs.exists == 'false'
+        run: |
+          pip install -e ".[dev,llm]" build
+          pytest -q
+      - name: Build
+        if: steps.version.outputs.exists == 'false'
+        run: python -m build
+      - name: Publish the release
+        if: steps.version.outputs.exists == 'false'
+        run: |
+          gh release create "${{ steps.version.outputs.tag }}" dist/* \
+            --title "${{ steps.version.outputs.tag }}" \
+            --notes-file release-notes.md \
+            --target "$GITHUB_SHA"

@@ -1,0 +1,9 @@
+{
+  "name": "heat-rod",
+  "kind": "heat",
+  "domain": [[0, 1]],
+  "t_final": 0.5,
+  "coefficients": {"alpha": 0.1},
+  "initial": "sin(pi*x) + 0.5*sin(3*pi*x)",
+  "description": "两端温度为 0 的细杆，没有精确解，agent 需要自己估计误差"
+}

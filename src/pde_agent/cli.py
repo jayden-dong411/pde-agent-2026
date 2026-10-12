@@ -11,16 +11,16 @@ from pathlib import Path
 from . import __version__
 from .agent import PDEAgent
 from .curriculum import basic_curriculum, frontier_lessons, run_curriculum
-from .llm import LLMError
+from .llm import PROVIDERS, LLMError, default_provider
 from .problem import PDEProblem
 
 
 def _brain(args):
-    if not getattr(args, "claude", False):
+    if not getattr(args, "learn", False):
         return None
-    from .llm import ClaudeBrain
+    from .llm import make_brain
 
-    return ClaudeBrain(model=args.model)
+    return make_brain(args.llm, args.model)
 
 
 def _agent(args) -> PDEAgent:
@@ -70,7 +70,7 @@ def cmd_solve(args) -> int:
 
 
 def cmd_ask(args) -> int:
-    args.claude = True
+    args.learn = True
     agent = _agent(args)
     report = agent.ask(args.text, args.tol)
     p = report.problem
@@ -83,7 +83,7 @@ def cmd_ask(args) -> int:
 
 
 def cmd_learn(args) -> int:
-    args.claude = True
+    args.learn = True
     data = json.loads(Path(args.problem).read_text(encoding="utf-8"))
     agent = _agent(args)
     problem = agent.equations.complete(PDEProblem.from_dict(data))
@@ -122,7 +122,9 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="pde-agent", description="会学习进化的 PDE 求解 agent")
     parser.add_argument("--version", action="version", version=f"%(prog)s {__version__}")
     parser.add_argument("--home", help="经验和技能的存放目录（默认 ~/.pde_agent 或 $PDE_AGENT_HOME）")
-    parser.add_argument("--model", default="claude-opus-5-5", help="Claude 模型")
+    parser.add_argument("--llm", choices=sorted(PROVIDERS),
+                        help="用哪个大模型（默认：只设置了 DEEPSEEK_API_KEY 时用 deepseek，否则用 claude）")
+    parser.add_argument("--model", help="模型名（默认 Claude 用 claude-opus-5-5，DeepSeek 用 deepseek-v4-pro）")
     parser.add_argument("--no-explore", action="store_true", help="只用已知最好的方法，不尝试新方法")
     sub = parser.add_subparsers(dest="command", required=True)
 
@@ -130,21 +132,21 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--rounds", type=int, default=1)
     p.add_argument("--level", type=int, help="只做到这一级")
     p.add_argument("--frontier", action="store_true", help="包含需要学习新方法的课程")
-    p.add_argument("--claude", action="store_true", help="允许用 Claude 学习新方法")
+    p.add_argument("--learn", "--claude", action="store_true", help="允许请大模型学习新方法")
     p.set_defaults(func=cmd_curriculum)
 
     p = sub.add_parser("solve", help="求解 JSON 描述的问题")
     p.add_argument("problem")
     p.add_argument("--tol", type=float, default=1e-3)
-    p.add_argument("--claude", action="store_true", help="没有合适方法时用 Claude 学习新方法")
+    p.add_argument("--learn", "--claude", action="store_true", help="没有合适方法时请大模型学习新方法")
     p.set_defaults(func=cmd_solve)
 
-    p = sub.add_parser("ask", help="用自然语言描述问题（需要 Claude）")
+    p = sub.add_parser("ask", help="用自然语言描述问题（需要大模型）")
     p.add_argument("text")
     p.add_argument("--tol", type=float, default=1e-3)
     p.set_defaults(func=cmd_ask)
 
-    p = sub.add_parser("learn", help="让 Claude 为某类问题写一个新方法（需要 Claude）")
+    p = sub.add_parser("learn", help="让大模型为某类问题写一个新方法")
     p.add_argument("problem")
     p.add_argument("--reason", default="")
     p.set_defaults(func=cmd_learn)
@@ -153,14 +155,19 @@ def main(argv: list[str] | None = None) -> int:
     sub.add_parser("skills", help="查看已知方程和方法").set_defaults(func=cmd_skills)
 
     args = parser.parse_args(argv)
+    args.llm = args.llm or default_provider()
     try:
         return args.func(args)
     except ModuleNotFoundError as exc:
-        if exc.name != "anthropic":
+        if exc.name == "anthropic":
+            print('需要先安装 Claude SDK：pip install -e ".[llm]"', file=sys.stderr)
+        elif exc.name == "openai":
+            print('需要先安装 DeepSeek 用的 OpenAI SDK：pip install -e ".[deepseek]"', file=sys.stderr)
+        else:
             raise
-        print('需要先安装 Claude SDK：pip install -e ".[llm]"', file=sys.stderr)
     except LLMError as exc:
-        print(f"调用 Claude 失败：{exc}（检查 ANTHROPIC_API_KEY 和网络）", file=sys.stderr)
+        name, key = PROVIDERS[args.llm]
+        print(f"调用 {name} 失败：{exc}（检查 {key} 和网络）", file=sys.stderr)
     return 2
 
 

@@ -1,6 +1,6 @@
 # pde-agent：会学习进化的偏微分方程求解 agent
 
-从最基础的方程开始，agent 自己选方法、自己验证结果、记住每次的经验；遇到不会的方程时请 Claude 写新的求解器，新求解器考试通过才收进技能库。
+从最基础的方程开始，agent 自己选方法、自己验证结果、记住每次的经验；遇到不会的方程时请大模型（Claude 或 DeepSeek）写新的求解器，新求解器考试通过才收进技能库。
 
 ## 现在会解什么
 
@@ -19,14 +19,14 @@
 2. **经验记忆**：每次求解都写进 `~/.pde_agent/experience.jsonl`，按问题类别（如 `heat/1d/dirichlet`）统计每个方法的成功率和计算量。
    - 选方法：没试过的方法先试一次（探索），之后优先用成功率高、计算量小的（利用）。
    - 选网格：根据以前在多大网格上达到多高精度，直接预测这次需要的网格，不用每次从粗网格加密上去。
-3. **技能库**：没有方法能解的问题（新方程、新维度），或者现有方法都达不到精度时，agent 请 Claude 写一个新的求解器模块。新模块要过两关才能入库：
+3. **技能库**：没有方法能解的问题（新方程、新维度），或者现有方法都达不到精度时，agent 请大模型写一个新的求解器模块。新模块要过两关才能入库：
    - 静态检查：只允许 numpy、scipy、sympy、math 和 `pde_agent.skill_api`，不能读写文件、开进程、用 `eval` 等；
    - 独立进程里的考试：在 16、32、64 网格上解几个已知答案的制造解问题，误差要足够小，收敛阶要达到声明的阶。
 
-   没通过就把考试报告发回给 Claude 修改，最多 3 轮。入库的技能下次启动自动加载。
+   没通过就把考试报告发回给大模型修改，最多 3 轮。入库的技能下次启动自动加载。
 4. **课程表**：从一维 Poisson 开始，依次是热方程、对流、波动、二维 Poisson，再到没有精确解、要自己估计误差的问题。最后是“前沿课程”：反应扩散方程、二维热方程、非线性 Burgers 方程，这些没有内置方法，要 agent 自己学。
 
-不接 Claude，把课程表跑两轮的结果：
+不接大模型，把课程表跑两轮的结果：
 
 ```
 第 1 轮：成功 12/12，共求解 26 次，工作量 1.23e+07
@@ -40,15 +40,16 @@
 ```bash
 pip install -e ".[dev]"            # 只用内置方法
 pip install -e ".[dev,llm]"        # 加上 Claude（需要 ANTHROPIC_API_KEY）
+pip install -e ".[dev,deepseek]"   # 加上 DeepSeek（需要 DEEPSEEK_API_KEY）
 
 pde-agent curriculum --rounds 2    # 从基础方程开始练习
 pde-agent stats                    # 看学到的经验
 pde-agent skills                   # 看已知的方程和方法
 pde-agent solve examples/heat_rod.json --tol 1e-4
 
-# 下面这些需要 Claude
+# 下面这些需要大模型（见“接入大模型”）
 pde-agent ask "在 [0,1] 上解 u_t = 0.01 u_xx，初值 sin(pi x)，两端为 0，算到 t = 1"
-pde-agent curriculum --frontier --claude   # 让 agent 自己学会反应扩散、二维热方程、Burgers
+pde-agent curriculum --frontier --learn   # 让 agent 自己学会反应扩散、二维热方程、Burgers
 ```
 
 在 Python 里用：
@@ -66,12 +67,12 @@ print(report.summary())   # 方法、网格、误差、求解次数
 u = report.result.u       # 终止时刻的解，网格是 report.result.grid
 ```
 
-接上 Claude：
+接上大模型：
 
 ```python
-from pde_agent.llm import ClaudeBrain
+from pde_agent.llm import ClaudeBrain, DeepSeekBrain
 
-agent = PDEAgent(brain=ClaudeBrain())
+agent = PDEAgent(brain=DeepSeekBrain())   # 或 ClaudeBrain()
 report = agent.ask("求解反应扩散方程 u_t = 0.5 u_xx - 2u ……")
 ```
 
@@ -86,20 +87,36 @@ src/pde_agent/
   memory.py       经验记忆：方法排序、网格预测
   skills.py       技能库：静态检查、考试、安装和加载
   agent.py        主循环：选方法、求解、验证、加密、记忆、学习
-  llm.py          Claude：理解自然语言问题、编写和修复新求解器
+  llm.py          大模型（Claude、DeepSeek）：理解自然语言问题、编写和修复新求解器
   curriculum.py   课程表
   templates/      技能模块示例（反应扩散方程）
 ```
 
-## 关于 Claude
+## 接入大模型
 
-- 默认模型 `claude-opus-5-5`，用结构化输出，返回的 JSON 一定符合格式。
-- 开启了服务端 fallback（`fallbacks="default"`）：如果模型拒绝某个请求，API 会在同一次调用里换模型重试。不需要可以在 `llm.py` 里去掉。
-- 只有“理解自然语言”和“写新求解器”用到 Claude。数值求解、验证、选方法都在本地，不联网也能用。
+只有“理解自然语言”和“写新求解器”用到大模型。数值求解、验证、选方法都在本地，不联网也能用。现在支持 Claude 和 DeepSeek，用 `--llm` 选：
+
+```bash
+export DEEPSEEK_API_KEY=...   # 在 https://platform.deepseek.com/api_keys 创建
+pde-agent --llm deepseek ask "在 [0,1] 上解 u_t = 0.01 u_xx，初值 sin(pi x)，两端为 0，算到 t = 1"
+pde-agent --llm deepseek --model deepseek-flash curriculum --frontier --learn
+```
+
+不写 `--llm` 时，只设置了 `DEEPSEEK_API_KEY` 就用 DeepSeek，否则用 Claude。
+
+| | Claude | DeepSeek |
+| --- | --- | --- |
+| 安装 | `pip install -e ".[llm]"` | `pip install -e ".[deepseek]"` |
+| API key（环境变量） | `ANTHROPIC_API_KEY` | `DEEPSEEK_API_KEY` |
+| 默认模型 | `claude-opus-5-5` | `deepseek-v4-pro`，更快更便宜可以用 `deepseek-flash` |
+| 回复格式 | 结构化输出，JSON 一定符合格式 | JSON 输出模式，本地再按格式检查，不合格就让它重写，最多 3 次 |
+| 其他 | 开启服务端 fallback：模型拒绝请求时，API 在同一次调用里换模型重试（不需要可以在 `llm.py` 里去掉） | 开启思考模式 |
+
+不管哪个模型写的求解器，都要通过同样的静态检查和制造解考试才能入库；技能旁边的 `.json` 文件记录了是哪个模型写的。
 
 ## 安全提示
 
-Claude 写的求解器代码会在本机运行。静态检查和独立进程能挡住常见的意外，但不是安全沙箱。入库前请看一下 `~/.pde_agent/skills/` 里的代码，最好在容器或虚拟环境里跑学习流程。
+大模型写的求解器代码会在本机运行。静态检查和独立进程能挡住常见的意外，但不是安全沙箱。入库前请看一下 `~/.pde_agent/skills/` 里的代码，最好在容器或虚拟环境里跑学习流程。
 
 ## 版本和更新日志
 
@@ -114,6 +131,7 @@ Claude 写的求解器代码会在本机运行。静态检查和独立进程能�
 ## 路线图
 
 - [x] 基础方程、自我验证、经验记忆、技能库、课程表
+- [x] 可以选用 Claude 或 DeepSeek
 - [ ] 把 PINN / 神经网络求解器作为一种技能接入，用同一套考试评判
 - [ ] 更多内置方程：二维热和波动、Neumann/Robin 边界、变系数
 - [ ] 让时间步长、CFL 数等参数也从经验中学习

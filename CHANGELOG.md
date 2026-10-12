@@ -2,6 +2,28 @@
 
 每个版本都发布在 [GitHub Releases](https://github.com/jayden-dong411/pde-agent-2026/releases)，发布说明就是下面对应版本的内容。
 
+## v0.2.0 — 2026-10-12
+
+可以用 DeepSeek 代替 Claude：理解自然语言描述的题目、给新方程写求解器，都能交给 DeepSeek。
+
+### 新增
+
+- **接入 DeepSeek**：`llm.py` 新增 `DeepSeekBrain`，通过 DeepSeek 的 OpenAI 兼容接口调用，默认模型 `deepseek-v4-pro`（用 `--model deepseek-flash` 可以换成更快更便宜的版本），开启思考模式和 JSON 输出。DeepSeek 不能强制 JSON 的结构，所以回复会在本地按格式检查；空回复或格式不对时让它重写，最多 3 次。
+- **命令行选模型**：新增全局选项 `--llm claude|deepseek`。不写时，只设置了 `DEEPSEEK_API_KEY` 就用 DeepSeek，否则用 Claude。
+- **安装和 key**：`pip install -e ".[deepseek]"`，API key 放在环境变量 `DEEPSEEK_API_KEY`。没有这个变量时直接报错，不会改用 `OPENAI_API_KEY`，避免把别家的 key 发给 DeepSeek。
+- **技能来源**：技能库的 `.json` 文件用 `origin` 记录是哪个模型写的（`claude` 或 `deepseek`）。
+
+### 改动
+
+- 提示词和对话流程抽成通用的 `Brain`，Claude 和 DeepSeek 只各自实现调用接口的部分，以后接别的模型（比如通义千问、Kimi）也只需要写这一部分。
+- `--claude` 改名为 `--learn`（允许请大模型学习新方法），旧的 `--claude` 写法仍然可用。
+- `--model` 不写时，按所选的模型取默认值。
+- 提示信息里的“Claude”改成“大模型”；调用失败时会说明是哪个模型、该检查哪个 API key。
+
+### 已知限制
+
+- DeepSeek 部分和 Claude 一样，只用模拟接口测过，还没用真实 API key 跑过。
+
 ## v0.1.0 — 2026-10-12
 
 第一个版本：一个会学习进化的 PDE 求解 agent，从最基础的方程开始。

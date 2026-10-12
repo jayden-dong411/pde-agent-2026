@@ -9,9 +9,10 @@ One call to ``solve`` is an episode:
    method blows up, stagnates or runs out of budget,
 5. append the whole episode to the experience memory.
 
-When no method fits, or all of them fail, and a ``ClaudeBrain`` is attached,
-the agent asks Claude for a new solver, examines it on manufactured
-solutions, and keeps it in the skill library only if it passes.
+When no method fits, or all of them fail, and a language model is attached
+(``ClaudeBrain`` or ``DeepSeekBrain``), the agent asks it for a new solver,
+examines it on manufactured solutions, and keeps it in the skill library
+only if it passes.
 """
 
 from __future__ import annotations
@@ -149,7 +150,7 @@ class PDEAgent:
         if not candidates:
             report.message = "还没有能解这类问题的方法"
             if self.brain is None:
-                report.message += "（接入 Claude 后 agent 可以自己学一个）"
+                report.message += "（接入大模型 Claude 或 DeepSeek 后，agent 可以自己学一个）"
             elif report.learned:
                 report.message += f"，学习新方法失败：{report.learned[-1].message}"
         else:
@@ -163,16 +164,16 @@ class PDEAgent:
         return report
 
     def ask(self, text: str, tol: float = 1e-3) -> SolveReport:
-        """Solve a problem described in natural language (needs Claude)."""
+        """Solve a problem described in natural language (needs a language model)."""
         if self.brain is None:
-            raise RuntimeError("understanding a problem in words needs Claude (ClaudeBrain)")
+            raise RuntimeError("understanding a problem in words needs a language model (ClaudeBrain or DeepSeekBrain)")
         parsed = self.brain.parse_problem(text, self.equations)
         return self.solve(parsed.problem, tol)
 
     def learn(self, problem: PDEProblem, reason: str = "", max_rounds: int = 3) -> LearnOutcome:
-        """Have Claude write a new method for this problem class and admit it if it passes."""
+        """Have the language model write a new method for this problem class and admit it if it passes."""
         if self.brain is None:
-            raise RuntimeError("learning new methods needs Claude (ClaudeBrain)")
+            raise RuntimeError("learning new methods needs a language model (ClaudeBrain or DeepSeekBrain)")
         task = SkillTask.from_problem(problem, self.equations, self.registry, reason)
         session = self.brain.skill_session(task)
         report = None
@@ -183,7 +184,7 @@ class PDEAgent:
                 return LearnOutcome(False, rounds=round_, report=report, message=str(exc))
             report = validate_candidate(candidate, task, timeout=self.validation_timeout)
             if report.ok:
-                path = self.skills.install(candidate, report, task)
+                path = self.skills.install(candidate, report, task, origin=getattr(self.brain, "provider", "llm"))
                 try:
                     spec = self.skills.load_file(path, self.registry, self.equations)
                 except Exception as exc:  # passed the exam process but cannot load here

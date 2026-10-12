@@ -41,7 +41,7 @@ jobs:
       - name: Test
         if: steps.version.outputs.exists == 'false'
         run: |
-          pip install -e ".[dev,llm]" build
+          pip install -e ".[dev,llm,deepseek]" build
           pytest -q
       - name: Build
         if: steps.version.outputs.exists == 'false'

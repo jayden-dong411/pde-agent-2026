@@ -1,4 +1,4 @@
-"""Claude as the agent's language brain.
+"""A language model as the agent's brain: Claude or DeepSeek.
 
 Two jobs need language understanding or code writing:
 
@@ -7,13 +7,17 @@ Two jobs need language understanding or code writing:
   cannot handle yet, and repair it from the validation report.
 
 Everything numerical (solving, checking, choosing methods) stays in plain
-Python, so the agent works without Claude for the equations it already knows.
-Requests use structured outputs, so replies always match a JSON schema.
+Python, so the agent works without a language model for the equations it
+already knows. ``Brain`` holds the prompts and the conversations; a subclass
+only makes the API call. Claude uses structured outputs, so its replies always
+match the JSON schema; DeepSeek uses JSON output mode, and its replies are
+checked against the schema here and asked for again when they do not match.
 """
 
 from __future__ import annotations
 
 import json
+import os
 from dataclasses import dataclass
 from typing import Any
 
@@ -25,6 +29,14 @@ DEFAULT_MODEL = "claude-opus-5-5"
 # Server-side fallback: if the model declines a request, the API retries it
 # on a fallback model within the same call.
 FALLBACK_BETA = "server-side-fallback-2026-07-01"
+
+DEEPSEEK_MODEL = "deepseek-v4-pro"
+DEEPSEEK_BASE_URL = "https://api.deepseek.com"
+# DeepSeek's thinking effort has the levels low, high and max
+_DEEPSEEK_EFFORT = {"low": "low", "medium": "high", "high": "high", "max": "max"}
+
+# provider -> (display name, API key variable)
+PROVIDERS = {"claude": ("Claude", "ANTHROPIC_API_KEY"), "deepseek": ("DeepSeek", "DEEPSEEK_API_KEY")}
 
 
 class LLMError(RuntimeError):
@@ -79,6 +91,16 @@ SKILL_SCHEMA: dict[str, Any] = {
     },
     "required": ["code", "test_solutions", "summary"],
     "additionalProperties": False,
+}
+
+# Shown to models that only get the schema in the prompt (DeepSeek)
+PROBLEM_EXAMPLE: dict[str, Any] = {
+    "kind": "heat", "equation": "u_t = alpha*u_xx", "domain": [{"lower": 0, "upper": 1}], "t_final": 0.5,
+    "coefficients": [{"name": "alpha", "value": 0.1}], "source": "0", "boundary": "dirichlet",
+    "boundary_value": "", "initial": "sin(pi*x)", "initial_velocity": "", "exact": "", "notes": "两端温度为零",
+}
+SKILL_EXAMPLE: dict[str, Any] = {
+    "code": "<the complete module source>", "test_solutions": ["sin(pi*x)*exp(-t)"], "summary": "<方法简介>",
 }
 
 PARSE_SYSTEM = """You translate a PDE problem described in natural language (often Chinese) into the structured problem format of pde-agent.
@@ -155,7 +177,48 @@ class ParsedProblem:
     raw: dict[str, Any]
 
 
-class ClaudeBrain:
+class Brain:
+    """What the agent needs from a language model; subclasses make the API call."""
+
+    provider = "llm"
+
+    def complete_json(
+        self, system: str, messages: list[dict], schema: dict, effort: str | None = None, example: dict | None = None,
+    ) -> tuple[dict, Any]:
+        """One request whose reply is a JSON object matching ``schema``.
+
+        Returns the JSON and the assistant content to append to ``messages``
+        for the next turn of the conversation.
+        """
+        raise NotImplementedError
+
+    def parse_problem(self, text: str, equations: EquationBook, attempts: int = 2) -> ParsedProblem:
+        kinds = "\n".join(
+            f"- {eq.kind}: {eq.form} (time order {eq.time_order}; coefficients "
+            + (", ".join(f"{k}={v:g}" for k, v in eq.defaults.items()) or "none")
+            + ")"
+            for eq in equations
+        )
+        system = PARSE_SYSTEM.format(kinds=kinds)
+        messages: list[dict] = [{"role": "user", "content": text}]
+        for attempt in range(attempts):
+            data, content = self.complete_json(system, messages, PROBLEM_SCHEMA, effort="medium", example=PROBLEM_EXAMPLE)
+            try:
+                return ParsedProblem(problem=problem_from_reply(data), notes=data.get("notes", ""), raw=data)
+            except (ValueError, KeyError, TypeError) as exc:
+                if attempt + 1 == attempts:
+                    raise LLMError(f"could not build a valid problem: {exc}") from exc
+                messages.append({"role": "assistant", "content": content})
+                messages.append({"role": "user", "content": f"That problem is invalid: {exc}. Please correct it."})
+        raise AssertionError("unreachable")
+
+    def skill_session(self, task: SkillTask) -> SkillSession:
+        return SkillSession(self, task)
+
+
+class ClaudeBrain(Brain):
+    provider = "claude"
+
     def __init__(self, client: Any = None, model: str = DEFAULT_MODEL, effort: str = "high", max_tokens: int = 64000):
         if client is None:
             import anthropic  # optional dependency: pip install "pde-agent[llm]"
@@ -166,7 +229,9 @@ class ClaudeBrain:
         self.effort = effort
         self.max_tokens = max_tokens
 
-    def complete_json(self, system: str, messages: list[dict], schema: dict, effort: str | None = None) -> tuple[dict, list]:
+    def complete_json(
+        self, system: str, messages: list[dict], schema: dict, effort: str | None = None, example: dict | None = None,
+    ) -> tuple[dict, list]:
         """One structured-output request; returns the JSON and the raw content blocks."""
         try:
             with self.client.beta.messages.stream(
@@ -197,41 +262,170 @@ class ClaudeBrain:
         except json.JSONDecodeError as exc:
             raise LLMError(f"the reply was not valid JSON: {exc}") from exc
 
-    def parse_problem(self, text: str, equations: EquationBook, attempts: int = 2) -> ParsedProblem:
-        kinds = "\n".join(
-            f"- {eq.kind}: {eq.form} (time order {eq.time_order}; coefficients "
-            + (", ".join(f"{k}={v:g}" for k, v in eq.defaults.items()) or "none")
-            + ")"
-            for eq in equations
-        )
-        system = PARSE_SYSTEM.format(kinds=kinds)
-        messages: list[dict] = [{"role": "user", "content": text}]
-        for attempt in range(attempts):
-            data, content = self.complete_json(system, messages, PROBLEM_SCHEMA, effort="medium")
-            try:
-                return ParsedProblem(problem=problem_from_reply(data), notes=data.get("notes", ""), raw=data)
-            except (ValueError, KeyError, TypeError) as exc:
-                if attempt + 1 == attempts:
-                    raise LLMError(f"could not build a valid problem: {exc}") from exc
-                messages.append({"role": "assistant", "content": content})
-                messages.append({"role": "user", "content": f"That problem is invalid: {exc}. Please correct it."})
-        raise AssertionError("unreachable")
 
-    def skill_session(self, task: SkillTask) -> SkillSession:
-        return SkillSession(self, task)
+class DeepSeekBrain(Brain):
+    """DeepSeek through its OpenAI-compatible API, with JSON output and thinking."""
+
+    provider = "deepseek"
+
+    def __init__(
+        self,
+        client: Any = None,
+        model: str = DEEPSEEK_MODEL,
+        effort: str = "high",
+        max_tokens: int = 64000,
+        api_key: str | None = None,
+        base_url: str = DEEPSEEK_BASE_URL,
+    ):
+        if client is None:
+            api_key = api_key or os.environ.get("DEEPSEEK_API_KEY")
+            if not api_key:
+                # checked here because the OpenAI SDK would fall back to
+                # OPENAI_API_KEY, and that key must not be sent to DeepSeek
+                raise LLMError("DEEPSEEK_API_KEY is not set")
+            import openai  # optional dependency: pip install "pde-agent[deepseek]"
+
+            client = openai.OpenAI(api_key=api_key, base_url=base_url)
+        self.client = client
+        self.model = model
+        self.effort = effort
+        self.max_tokens = max_tokens
+
+    def complete_json(
+        self, system: str, messages: list[dict], schema: dict, effort: str | None = None, example: dict | None = None,
+    ) -> tuple[dict, str]:
+        """JSON-mode request; replies that are empty or off-schema are asked for again."""
+        conversation = [{"role": "system", "content": f"{system}\n\n{json_instructions(schema, example)}"}, *messages]
+        problem = ""
+        for _ in range(3):
+            text, finish = self._chat(conversation, effort or self.effort)
+            if finish == "length":
+                raise LLMError("the reply was cut off at max_tokens")
+            if finish == "content_filter":
+                raise LLMError("DeepSeek's content filter stopped the reply")
+            if finish == "insufficient_system_resource":
+                raise LLMError("DeepSeek is short of capacity right now; try again later")
+            if not text.strip():
+                problem = "the reply was empty"  # an occasional DeepSeek hiccup: ask again
+                continue
+            try:
+                data = json_object(text)
+                errors = schema_errors(data, schema)
+            except ValueError as exc:
+                errors = [str(exc)]
+            if not errors:
+                return data, text
+            problem = "; ".join(errors[:5])
+            conversation = [
+                *conversation,
+                {"role": "assistant", "content": text},
+                {"role": "user", "content": f"That reply cannot be used: {problem}. "
+                 "Reply again with one complete json object that matches the schema."},
+            ]
+        raise LLMError(f"no usable JSON reply after 3 attempts: {problem}")
+
+    def _chat(self, messages: list[dict], effort: str) -> tuple[str, str | None]:
+        """Stream one chat completion; returns the reply text and the finish reason."""
+        parts, finish = [], None
+        try:
+            stream = self.client.chat.completions.create(
+                model=self.model,
+                messages=messages,
+                max_tokens=self.max_tokens,
+                response_format={"type": "json_object"},
+                reasoning_effort=_DEEPSEEK_EFFORT.get(effort, "high"),
+                extra_body={"thinking": {"type": "enabled"}},
+                stream=True,
+            )
+            for chunk in stream:
+                if not chunk.choices:
+                    continue
+                choice = chunk.choices[0]
+                if choice.delta is not None and choice.delta.content:
+                    parts.append(choice.delta.content)
+                finish = choice.finish_reason or finish
+        except Exception as exc:  # credentials, balance, network, rate limits after the SDK's retries
+            raise LLMError(f"{type(exc).__name__}: {exc}") from exc
+        return "".join(parts), finish
+
+
+def json_instructions(schema: dict, example: dict | None = None) -> str:
+    """The reply format, spelled out for models that do not enforce a schema."""
+    lines = [
+        "Reply with one json object and nothing else: no Markdown fences and no text around it.",
+        "It must match this JSON schema; every listed property is required (use \"\" for a text field that does not apply):",
+        json.dumps(schema, ensure_ascii=False),
+    ]
+    if example is not None:
+        lines += ["An example of the format:", json.dumps(example, ensure_ascii=False)]
+    return "\n".join(lines)
+
+
+def json_object(text: str) -> dict:
+    """The JSON object in a reply, tolerating Markdown fences or text around it."""
+    start, end = text.find("{"), text.rfind("}")
+    if start < 0 or end < start:
+        raise ValueError("the reply contains no JSON object")
+    try:
+        data = json.loads(text[start:end + 1])
+    except json.JSONDecodeError as exc:
+        raise ValueError(f"the reply is not valid JSON: {exc}") from exc
+    if not isinstance(data, dict):
+        raise ValueError("the reply is not a JSON object")
+    return data
+
+
+def schema_errors(value: Any, schema: dict, path: str = "reply") -> list[str]:
+    """Where ``value`` breaks the schema (types, required keys, enums)."""
+    kind = schema.get("type")
+    if kind == "object":
+        if not isinstance(value, dict):
+            return [f"{path} must be an object"]
+        errors = [f"{path}.{key} is missing" for key in schema.get("required", []) if key not in value]
+        for key, sub in schema.get("properties", {}).items():
+            if key in value:
+                errors += schema_errors(value[key], sub, f"{path}.{key}")
+        return errors
+    if kind == "array":
+        if not isinstance(value, list):
+            return [f"{path} must be an array"]
+        return [e for i, item in enumerate(value) for e in schema_errors(item, schema.get("items", {}), f"{path}[{i}]")]
+    if kind == "string" and not isinstance(value, str):
+        return [f"{path} must be a string"]
+    if kind == "number" and (isinstance(value, bool) or not isinstance(value, (int, float))):
+        return [f"{path} must be a number"]
+    if "enum" in schema and value not in schema["enum"]:
+        return [f"{path} must be one of {schema['enum']}"]
+    return []
+
+
+def default_provider(env: dict | None = None) -> str:
+    """DeepSeek when only its API key is set, otherwise Claude."""
+    env = os.environ if env is None else env
+    if env.get("DEEPSEEK_API_KEY") and not env.get("ANTHROPIC_API_KEY"):
+        return "deepseek"
+    return "claude"
+
+
+def make_brain(provider: str, model: str | None = None) -> Brain:
+    if provider == "claude":
+        return ClaudeBrain(model=model or DEFAULT_MODEL)
+    if provider == "deepseek":
+        return DeepSeekBrain(model=model or DEEPSEEK_MODEL)
+    raise ValueError(f"unknown language model provider {provider!r} (use one of {', '.join(PROVIDERS)})")
 
 
 class SkillSession:
-    """A conversation in which Claude writes a skill and repairs it."""
+    """A conversation in which the language model writes a skill and repairs it."""
 
-    def __init__(self, brain: ClaudeBrain, task: SkillTask):
+    def __init__(self, brain: Brain, task: SkillTask):
         self.brain = brain
         self.task = task
         self.system = SKILL_SYSTEM.format(template=TEMPLATE.read_text(encoding="utf-8").strip())
         self.messages: list[dict] = [{"role": "user", "content": task_prompt(task)}]
 
     def propose(self) -> SkillCandidate:
-        data, content = self.brain.complete_json(self.system, self.messages, SKILL_SCHEMA)
+        data, content = self.brain.complete_json(self.system, self.messages, SKILL_SCHEMA, example=SKILL_EXAMPLE)
         self.messages.append({"role": "assistant", "content": content})
         return SkillCandidate(
             code=data["code"],

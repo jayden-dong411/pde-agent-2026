@@ -2,7 +2,8 @@
 
 Levels 1-5 can be solved with the built-in methods (level 5 has no exact
 solution, so the agent must estimate its own error). The frontier lessons
-have no built-in method: the agent has to learn one (with Claude) first.
+have no built-in method: the agent has to learn one (with Claude or DeepSeek)
+first.
 """
 
 from __future__ import annotations

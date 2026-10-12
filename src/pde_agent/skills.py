@@ -409,7 +409,7 @@ class SkillLibrary:
                 continue
         return sorted(items, key=lambda m: m.get("created", ""))
 
-    def install(self, candidate: SkillCandidate, report: ValidationReport, task: SkillTask | None, origin: str = "claude") -> Path:
+    def install(self, candidate: SkillCandidate, report: ValidationReport, task: SkillTask | None, origin: str = "llm") -> Path:
         self.root.mkdir(parents=True, exist_ok=True)
         stem = (report.solver or "skill").replace(".", "__")
         path, version = self.root / f"{stem}.py", 1

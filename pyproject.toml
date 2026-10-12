@@ -12,6 +12,7 @@ dependencies = ["numpy>=1.24", "scipy>=1.10", "sympy>=1.12"]
 
 [project.optional-dependencies]
 llm = ["anthropic>=1.13"]
+deepseek = ["openai>=3.0"]
 dev = ["pytest>=7"]
 
 [project.scripts]

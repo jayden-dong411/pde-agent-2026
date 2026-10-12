@@ -25,3 +25,11 @@ def test_solve_problem_file(tmp_path, capsys):
     path.write_text(json.dumps(problem), encoding="utf-8")
     assert main(["--home", str(tmp_path / "home"), "solve", str(path), "--tol", "1e-4"]) == 0
     assert "rod：成功" in capsys.readouterr().out
+
+
+def test_deepseek_without_a_key_is_a_clear_error(tmp_path, monkeypatch, capsys):
+    monkeypatch.delenv("DEEPSEEK_API_KEY", raising=False)
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-not-for-deepseek")
+    assert main(["--home", str(tmp_path), "--llm", "deepseek", "ask", "求解一维热方程"]) == 2
+    err = capsys.readouterr().err
+    assert "调用 DeepSeek 失败" in err and "DEEPSEEK_API_KEY" in err

@@ -61,6 +61,8 @@ pde-agent app        # 打开 http://127.0.0.1:8765/
 
 在浏览器里选一道课程题或自己填写题目，点“求解”就能看到解的图像、误差和 agent 试过的方法；也可以切到“用文字描述”，让大模型理解题目后再解（需要先设置好大模型，见“接入大模型”）。页面下方是经验记忆和已知方法。网页只在本机能打开，按 Ctrl+C 退出。
 
+**在网页里选大模型、填 API key**：点右上角的“大模型”按钮，选 Claude 或 DeepSeek 和模型，粘贴 API key，点“保存”。以后每次打开网页（命令行也一样）都会自动用这里保存的选择和 key，不用再设置环境变量。key 保存在本机的 `~/.pde_agent/settings.json`（跟随 `--home` / `PDE_AGENT_HOME`），只有你的账户能读，页面上只显示开头和结尾几位；在同一个窗口里可以删除。
+
 ![网页版](docs/app.png)
 
 ## 在 Python 里用
@@ -103,6 +105,7 @@ src/pde_agent/
   llm.py          大模型（Claude、DeepSeek）：理解自然语言问题、编写和修复新求解器
   curriculum.py   课程表
   app.py          网页版的本地服务
+  settings.py     网页里保存的大模型选择和 API key
   templates/      技能模块示例（反应扩散方程）、网页
 ```
 
@@ -116,7 +119,7 @@ pde-agent --llm deepseek ask "在 [0,1] 上解 u_t = 0.01 u_xx，初值 sin(pi x
 pde-agent --llm deepseek --model deepseek-v4-pro curriculum --frontier --learn   # 换成更强的 pro 模型
 ```
 
-不写 `--llm` 时，只设置了 `DEEPSEEK_API_KEY` 就用 DeepSeek，否则用 Claude。
+也可以不用环境变量，直接在网页的设置窗口里选模型、填 key（见“网页版”）。网页上以设置窗口里保存的为准；命令行出题或学习时，写了 `--llm` / `--model` 就用写的，没写就用网页里保存的，都没有时自动选择（不写 `--llm` 时，只设置了 `DEEPSEEK_API_KEY` 就用 DeepSeek，否则用 Claude）。key 先用网页里保存的，没有保存才用环境变量。
 
 DeepSeek 解析题目时使用 low 思考强度和 16,384 tokens 预算；写求解器时使用 high 和 131,072 tokens。思考过程也占生成预算。遇到长度截断时，最多自动重试一次，提高预算并改用 low，从完整对话重新生成。JSON 格式修复仍最多尝试 3 次，所以一次调用最多发起 4 次生成请求。
 
@@ -125,7 +128,7 @@ DeepSeek 解析题目时使用 low 思考强度和 16,384 tokens 预算；写求
 | | Claude | DeepSeek |
 | --- | --- | --- |
 | 安装 | `pip install -e ".[llm]"` | `pip install -e ".[deepseek]"` |
-| API key（环境变量） | `ANTHROPIC_API_KEY` | `DEEPSEEK_API_KEY` |
+| API key | 网页设置窗口，或环境变量 `ANTHROPIC_API_KEY` | 网页设置窗口，或环境变量 `DEEPSEEK_API_KEY` |
 | 默认模型 | `claude-opus-5-5` | `deepseek-flash`，需要更强的可以用 `--model deepseek-v4-pro` |
 | 回复格式 | 结构化输出，JSON 一定符合格式 | JSON 输出模式，本地再按格式检查，不合格就让它重写，最多 3 次 |
 | 其他 | 开启服务端 fallback：模型拒绝请求时，API 在同一次调用里换模型重试（不需要可以在 `llm.py` 里去掉） | 开启思考模式 |

@@ -49,6 +49,36 @@ a { color: var(--accent); }
 .llm { margin-left: auto; display: flex; align-items: center; gap: 10px; font-size: 13px; color: var(--bar-muted); flex-wrap: wrap; }
 .dot { width: 8px; height: 8px; border-radius: 50%; background: #e0a43a; flex: none; }
 .dot.ready { background: #5fc79a; }
+.llm-btn { display: inline-flex; align-items: center; gap: 8px; min-height: 36px; padding: 0 12px; border: 1px solid var(--bar-line); border-radius: 8px; background: transparent; color: var(--bar-ink); cursor: pointer; }
+.llm-btn:hover { background: var(--bar-raised); }
+.llm-btn .mono { font-size: 12px; color: var(--bar-muted); }
+.llm-btn .cta { color: var(--bar-accent); font-weight: 500; }
+
+/* settings window */
+dialog.settings { width: min(520px, calc(100vw - 32px)); max-height: calc(100vh - 32px); padding: 0; border: 1px solid var(--line); border-radius: 14px; background: var(--surface); color: var(--ink); box-shadow: 0 24px 60px rgba(10, 20, 28, .35); }
+dialog.settings::backdrop { background: rgba(10, 20, 28, .55); }
+.settings form { display: flex; flex-direction: column; gap: 18px; padding: 22px 24px; }
+.settings .head { display: flex; justify-content: space-between; align-items: flex-start; gap: 12px; }
+.settings .head p { margin: 4px 0 0; font-size: 13px; color: var(--muted); }
+.icon-btn { width: 36px; height: 36px; flex: none; border: 0; border-radius: 8px; background: transparent; color: var(--muted); font-size: 20px; line-height: 1; cursor: pointer; }
+.icon-btn:hover { background: var(--track); color: var(--ink); }
+.providers { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; border: 0; margin: 0; padding: 0; min-width: 0; }
+.providers legend { padding: 0; margin-bottom: 6px; font-size: 12px; font-weight: 500; color: var(--muted); }
+.provider { position: relative; display: flex; flex-direction: column; gap: 2px; padding: 12px 14px; border: 1px solid var(--field-line); border-radius: 10px; cursor: pointer; min-width: 0; }
+.provider input { position: absolute; opacity: 0; pointer-events: none; }
+.provider b { font-weight: 600; }
+.provider small { font-size: 12px; color: var(--muted); overflow-wrap: anywhere; }
+.provider:has(input:checked) { border: 1.5px solid var(--accent); background: var(--accent-soft); }
+.provider:has(input:focus-visible) { outline: 2px solid var(--accent); outline-offset: 2px; }
+.key-row { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 8px; }
+input[type=password] { width: 100%; min-width: 0; height: 44px; padding: 0 12px; border: 1px solid var(--field-line); border-radius: 9px; background: var(--surface); color: var(--ink); font-family: var(--mono); font-size: 13px; }
+.plain-btn { height: 44px; padding: 0 14px; border: 1px solid var(--field-line); border-radius: 9px; background: var(--surface); cursor: pointer; white-space: nowrap; }
+.plain-btn:hover { background: var(--soft); }
+.link-btn { align-self: flex-start; padding: 4px 0; border: 0; background: none; color: var(--bad); font-size: 13px; cursor: pointer; text-decoration: underline; }
+.actions { display: flex; justify-content: flex-end; gap: 10px; flex-wrap: wrap; }
+.actions .go { height: 44px; padding: 0 22px; }
+.saved { margin: 0; padding: 8px 12px; border-radius: 9px; background: var(--ok-soft); color: var(--ok); font-size: 13px; }
+.inline-btn { margin-left: 4px; padding: 0; border: 0; background: none; color: var(--accent); font-size: 12px; font-weight: 500; cursor: pointer; text-decoration: underline; }
 
 /* layout */
 main { max-width: 1320px; margin: 0 auto; padding: 28px 32px 48px; display: flex; flex-direction: column; gap: 24px; }
@@ -196,13 +226,52 @@ th { color: var(--muted); font-weight: 500; font-size: 12px; }
       <a href="#methods">方程和方法</a>
     </nav>
     <div class="llm">
-      <span class="dot" id="llm-dot"></span>
-      <span id="llm-text">加载中…</span>
-      <span aria-hidden="true">·</span>
+      <button type="button" class="llm-btn" id="llm-btn" title="选择大模型、填写 API key">
+        <span class="dot" id="llm-dot"></span>
+        <span id="llm-text">加载中…</span>
+        <span class="mono" id="llm-model"></span>
+        <span class="cta" id="llm-cta">设置</span>
+      </button>
       <span class="mono" id="home"></span>
     </div>
   </div>
 </header>
+
+<dialog class="settings" id="settings" aria-labelledby="settings-title">
+  <form id="settings-form" novalidate>
+    <div class="head">
+      <div>
+        <h2 id="settings-title">大模型设置</h2>
+        <p>用自然语言出题、学习新方法时会调用这里选的大模型。保存后每次打开网页都会自动使用。</p>
+      </div>
+      <button type="button" class="icon-btn" id="settings-close" aria-label="关闭">×</button>
+    </div>
+    <fieldset class="providers" id="providers">
+      <legend>调用哪个大模型</legend>
+    </fieldset>
+    <div class="field">
+      <label for="model">模型 <span>（可以选，也可以直接输入模型名）</span></label>
+      <input type="text" id="model" list="model-list" autocomplete="off" spellcheck="false">
+      <datalist id="model-list"></datalist>
+    </div>
+    <div class="field">
+      <label for="api-key">API key</label>
+      <div class="key-row">
+        <input type="password" id="api-key" autocomplete="off" spellcheck="false">
+        <button type="button" class="plain-btn" id="key-toggle" aria-pressed="false">显示</button>
+      </div>
+      <p class="hint" id="key-hint"></p>
+      <button type="button" class="link-btn hidden" id="key-clear">删除已保存的 key</button>
+    </div>
+    <p class="hint" id="settings-file"></p>
+    <p class="alert hidden" id="settings-error" role="alert"></p>
+    <p class="saved hidden" id="settings-saved" role="status"></p>
+    <div class="actions">
+      <button type="button" class="plain-btn" id="settings-cancel">取消</button>
+      <button type="submit" class="go" id="settings-save">保存</button>
+    </div>
+  </form>
+</dialog>
 
 <main id="solve">
   <div class="columns">
@@ -730,12 +799,114 @@ async function loadInfo() {
   info = await api("/api/info");
   $("version").textContent = "v" + info.version;
   $("home").textContent = info.home;
-  $("llm-dot").classList.toggle("ready", info.llm.ready);
-  $("llm-text").textContent = info.llm.ready ? `大模型：${info.llm.name}` : `大模型：${info.llm.name}（未设置 ${info.llm.key}）`;
-  $("llm-hint").textContent = info.llm.ready
-    ? `会请 ${info.llm.name} 把描述变成题目，再交给 agent 求解。`
-    : `需要先设置 ${info.llm.key}，再重新运行 pde-agent app。`;
+  showLLM();
   showMethods();
+}
+
+function showLLM() {
+  $("llm-dot").classList.toggle("ready", info.llm.ready);
+  $("llm-text").textContent = `大模型：${info.llm.name}`;
+  $("llm-model").textContent = info.llm.model;
+  $("llm-cta").textContent = info.llm.ready ? "设置" : "填 API key";
+  $("llm-btn").title = info.llm.ready ? "选择大模型、填写 API key" : `还没有 ${info.llm.name} 的 API key，点这里填写`;
+  $("llm-hint").replaceChildren(info.llm.ready
+    ? `会请 ${info.llm.name}（${info.llm.model}）把描述变成题目，再交给 agent 求解。`
+    : `还没有 ${info.llm.name} 的 API key。`);
+  if (!info.llm.ready) {
+    const b = el("button", { type: "button", class: "inline-btn" }, "去设置");
+    b.addEventListener("click", openSettings);
+    $("llm-hint").append(b);
+  }
+}
+
+/* settings window */
+let settings = null;
+let chosen = null;
+
+function current() { return settings.providers.find((p) => p.id === chosen); }
+
+function showSettingsMsg(kind, message) {
+  $("settings-error").textContent = kind === "error" ? message : "";
+  $("settings-error").classList.toggle("hidden", kind !== "error");
+  $("settings-saved").textContent = kind === "saved" ? message : "";
+  $("settings-saved").classList.toggle("hidden", kind !== "saved");
+}
+
+function pickProvider(id, keepModel = false) {
+  chosen = id;
+  const p = current();
+  document.querySelectorAll('#providers input').forEach((r) => { r.checked = r.value === id; });
+  $("model-list").replaceChildren(...p.models.map((m) => el("option", { value: m })));
+  if (!keepModel) $("model").value = p.model;
+  $("model").placeholder = p.default_model;
+  $("api-key").value = "";
+  $("api-key").placeholder = p.saved_key ? `已保存 ${p.saved_key}，留空则不改` : "粘贴你的 API key";
+  $("key-hint").textContent = p.saved_key
+    ? `已保存的 key：${p.saved_key}。要换就粘贴新的。`
+    : p.env_key ? `没有保存 key，现在用的是环境变量 ${p.env}。在这里填了以后会优先用这里的。`
+    : `还没有 ${p.name} 的 key。${p.id === "deepseek" ? "到 platform.deepseek.com 的 API keys 页面创建。" : "到 console.anthropic.com 的 API keys 页面创建。"}`;
+  $("key-clear").classList.toggle("hidden", !p.saved_key);
+}
+
+async function openSettings() {
+  showSettingsMsg("", "");
+  try { settings = await api("/api/settings"); } catch (e) { showError(e.message); return; }
+  $("providers").querySelectorAll("label").forEach((n) => n.remove());
+  for (const p of settings.providers) {
+    const radio = el("input", { type: "radio", name: "provider", value: p.id });
+    radio.addEventListener("change", () => pickProvider(p.id));
+    const state = p.saved_key ? `已保存 key ${p.saved_key}` : p.env_key ? `用环境变量 ${p.env}` : "还没有 key";
+    $("providers").append(el("label", { class: "provider" }, radio, el("b", {}, p.name), el("small", {}, state)));
+  }
+  pickProvider(settings.provider);
+  $("model").value = settings.model;
+  $("settings-file").textContent = `key 只保存在这台电脑的 ${settings.file} 里，只有你的账户能读，不会上传。`;
+  setKeyVisible(false);
+  if (!$("settings").open) $("settings").showModal();
+  (current().saved_key || current().env_key ? $("model") : $("api-key")).focus();
+}
+
+function setKeyVisible(on) {
+  $("api-key").type = on ? "text" : "password";
+  $("key-toggle").textContent = on ? "隐藏" : "显示";
+  $("key-toggle").setAttribute("aria-pressed", String(on));
+}
+
+async function saveSettings(extra = {}) {
+  showSettingsMsg("", "");
+  const save = $("settings-save");
+  save.disabled = true;
+  try {
+    settings = await api("/api/settings", {
+      provider: chosen, model: $("model").value.trim(), api_key: $("api-key").value.trim(), ...extra,
+    });
+    await loadInfo();
+    const p = settings.providers.find((x) => x.id === chosen);
+    if (extra.clear_key) {
+      pickProvider(chosen, true);
+      showSettingsMsg("saved", `已删除保存的 ${p.name} key。`);
+    } else if (!info.llm.ready) {
+      pickProvider(chosen, true);
+      showSettingsMsg("error", `已保存选择，但还没有 ${p.name} 的 API key，填上才能用。`);
+    } else {
+      $("settings").close();
+      $("status").textContent = `已保存：以后都用 ${info.llm.name}（${info.llm.model}）。`;
+      $("status").classList.remove("hidden");
+    }
+  } catch (e) {
+    showSettingsMsg("error", e.message);
+  } finally {
+    save.disabled = false;
+  }
+}
+
+function setupSettings() {
+  $("llm-btn").addEventListener("click", openSettings);
+  $("settings-close").addEventListener("click", () => $("settings").close());
+  $("settings-cancel").addEventListener("click", () => $("settings").close());
+  $("key-toggle").addEventListener("click", () => setKeyVisible($("api-key").type === "password"));
+  $("key-clear").addEventListener("click", () => saveSettings({ clear_key: true, api_key: "" }));
+  $("settings-form").addEventListener("submit", (e) => { e.preventDefault(); saveSettings(); });
 }
 
 function setupNav() {
@@ -745,6 +916,7 @@ function setupNav() {
 
 async function init() {
   setupNav();
+  setupSettings();
   try { await loadInfo(); } catch (e) { $("llm-text").textContent = e.message; return; }
   for (const eq of info.equations) $("kind").append(el("option", { value: eq.kind }, eq.kind));
   for (const ex of info.examples) $("preset").append(el("option", { value: ex.name }, `第 ${ex.level} 级 · ${ex.title}`));

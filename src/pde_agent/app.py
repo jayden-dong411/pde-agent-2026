@@ -24,6 +24,7 @@ from .agent import OUTCOMES, PDEAgent, SolveReport
 from .curriculum import basic_curriculum, frontier_lessons
 from .llm import PROVIDERS, LLMError
 from .problem import PDEProblem
+from .settings import DEFAULT_MODELS, MODELS, Settings, key_hint
 from .verify import exact_values
 
 PAGE = Path(__file__).parent / "templates" / "app.html"
@@ -109,35 +110,84 @@ class AppState:
     """The agent behind the page; solves run one at a time."""
 
     def __init__(self, agent: PDEAgent, provider: str, model: str | None = None,
-                 make_brain: Callable[[str, str | None], Any] | None = None):
+                 make_brain: Callable[..., Any] | None = None):
         self.agent = agent
-        self.provider = provider
-        self.model = model
+        self.settings = Settings(agent.home)
+        self._start = (provider, model)  # from the command line, until settings are saved on the page
         self._make_brain = make_brain
         self.lock = threading.Lock()
+
+    @property
+    def provider(self) -> str:
+        return self.settings.provider or self._start[0]
+
+    @property
+    def model(self) -> str:
+        provider, model = self.provider, self.settings.model(self.provider)
+        if model is None and self.settings.provider is None and provider == self._start[0]:
+            model = self._start[1]  # nothing saved on the page yet: keep --model
+        return model or DEFAULT_MODELS[provider]
+
+    def api_key(self, provider: str | None = None) -> str:
+        """The saved key, else the provider's environment variable."""
+        provider = provider or self.provider
+        return self.settings.key(provider) or os.environ.get(PROVIDERS[provider][1], "")
 
     def brain(self):
         if self.agent.brain is None:
             make = self._make_brain
             if make is None:
                 from .llm import make_brain as make
-                self.agent.brain = make(self.provider, self.model,
+                self.agent.brain = make(self.provider, self.model, api_key=self.api_key() or None,
                                         log_path=Path(self.agent.home) / "deepseek_requests.jsonl")
             else:
-                self.agent.brain = make(self.provider, self.model)
+                self.agent.brain = make(self.provider, self.model, api_key=self.api_key() or None)
         return self.agent.brain
+
+    def get_settings(self) -> dict:
+        return {
+            "provider": self.provider,
+            "model": self.model,
+            "file": self._short(self.settings.path),
+            "providers": [
+                {"id": pid, "name": name, "env": env, "models": MODELS[pid], "default_model": DEFAULT_MODELS[pid],
+                 "model": self.settings.model(pid) or DEFAULT_MODELS[pid],
+                 "saved_key": key_hint(self.settings.key(pid)) if self.settings.key(pid) else None,
+                 "env_key": bool(os.environ.get(env))}
+                for pid, (name, env) in PROVIDERS.items()
+            ],
+        }
+
+    def save_settings(self, payload: dict) -> dict:
+        provider = payload.get("provider")
+        fields = {name: payload.get(name, "") for name in ("model", "api_key")}
+        if not all(isinstance(v, str) for v in fields.values()):
+            raise RequestError("设置的格式不对")
+        with self.lock:
+            try:
+                self.settings.update(str(provider), fields["model"], fields["api_key"],
+                                     clear_key=bool(payload.get("clear_key")))
+            except ValueError as exc:
+                raise RequestError(str(exc)) from exc
+            except OSError as exc:
+                raise RequestError(f"保存设置失败：{exc}", HTTPStatus.INTERNAL_SERVER_ERROR) from exc
+            self.agent.brain = None  # rebuilt with the new choice on next use
+        return self.get_settings()
+
+    @staticmethod
+    def _short(path: Path) -> str:
+        try:
+            return str(Path("~") / Path(path).relative_to(Path.home()))
+        except ValueError:
+            return str(path)
 
     def info(self) -> dict:
         name, key = PROVIDERS[self.provider]
-        home = Path(self.agent.home)
-        try:
-            home = Path("~") / home.relative_to(Path.home())
-        except ValueError:
-            pass
         return {
             "version": __version__,
-            "home": str(home),
-            "llm": {"provider": self.provider, "name": name, "key": key, "ready": bool(os.environ.get(key))},
+            "home": self._short(Path(self.agent.home)),
+            "llm": {"provider": self.provider, "name": name, "key": key, "model": self.model,
+                    "ready": bool(self.api_key())},
             "equations": [
                 {"kind": eq.kind, "form": eq.form, "time_order": eq.time_order, "defaults": eq.defaults,
                  "description": eq.description, "origin": eq.origin}
@@ -185,8 +235,9 @@ class AppState:
 
     def _brain_or_error(self):
         name, key = PROVIDERS[self.provider]
-        if self.agent.brain is None and self._make_brain is None and not os.environ.get(key):
-            raise RequestError(f"还没有设置 {key}：设置好以后重新运行 pde-agent app（用 {name}）", HTTPStatus.BAD_GATEWAY)
+        if self.agent.brain is None and self._make_brain is None and not self.api_key():
+            raise RequestError(f"还没有 {name} 的 API key：点右上角的“设置”填一下（或者设置环境变量 {key}）",
+                               HTTPStatus.BAD_GATEWAY)
         try:
             return self.brain()
         except LLMError as exc:
@@ -230,18 +281,33 @@ def make_handler(state: AppState):
         def _json(self, status: HTTPStatus, data: dict) -> None:
             self._send(status, json.dumps(data, ensure_ascii=False).encode("utf-8"), "application/json; charset=utf-8")
 
+        def _local_host(self) -> bool:
+            """Only requests addressed to this computer: a web page that points its own
+            domain at 127.0.0.1 (DNS rebinding) must not reach the key or the models."""
+            port = self.server.server_address[1]
+            if self.headers.get("Host", "") in (f"127.0.0.1:{port}", f"localhost:{port}"):
+                return True
+            self._json(HTTPStatus.FORBIDDEN, {"error": "只接受本机地址的请求"})
+            return False
+
         def do_GET(self):
+            if not self._local_host():
+                return
             if self.path in ("/", "/index.html"):
                 self._send(HTTPStatus.OK, page, "text/html; charset=utf-8")
             elif self.path == "/api/info":
                 self._json(HTTPStatus.OK, state.info())
             elif self.path == "/api/stats":
                 self._json(HTTPStatus.OK, state.stats())
+            elif self.path == "/api/settings":
+                self._json(HTTPStatus.OK, state.get_settings())
             else:
                 self._json(HTTPStatus.NOT_FOUND, {"error": "not found"})
 
         def do_POST(self):
-            routes = {"/api/solve": state.solve, "/api/ask": state.ask}
+            if not self._local_host():
+                return
+            routes = {"/api/solve": state.solve, "/api/ask": state.ask, "/api/settings": state.save_settings}
             route = routes.get(self.path)
             if route is None:
                 self._json(HTTPStatus.NOT_FOUND, {"error": "not found"})

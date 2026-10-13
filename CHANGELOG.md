@@ -2,6 +2,22 @@
 
 每个版本都发布在 [GitHub Releases](https://github.com/jayden-dong411/pde-agent-2026/releases)，发布说明就是下面对应版本的内容。
 
+## v0.5.0 — 2026-10-13
+
+在网页里选择大模型、填写 API key，保存后每次打开都自动使用。
+
+### 新功能
+
+- **大模型设置窗口**：点网页右上角的“大模型”按钮，可以选 Claude 或 DeepSeek，选或输入模型名（比如 `deepseek-flash`、`deepseek-v4-pro`、`claude-sonnet-5-5`），粘贴 API key 后保存。保存后马上生效，不用重启。
+- **自动记住**：选择和 key 保存在本机的 `~/.pde_agent/settings.json`（跟随 `--home` / `PDE_AGENT_HOME`），文件只有你的账户能读。以后每次打开网页、用命令行出题或学习，都会自动用这里的设置，不需要再设环境变量。
+- 每个大模型的 key 分开保存，切换模型不会丢掉另一个的 key；窗口里可以删除已保存的 key。页面上只显示 key 的开头和结尾几位（比如 `sk-…abcd`），不会把完整的 key 发回浏览器。
+- 没有 key 时，右上角按钮会提示“填 API key”，“用一句话描述”下面也有“去设置”按钮；报错信息改成告诉你去哪里填。
+
+### 改动
+
+- 网页上以设置窗口里保存的为准。命令行（`ask`、`curriculum --learn` 等）写了 `--llm` / `--model` 就用写的，没写就用网页里保存的，都没有时按原来的规则自动选择。key 先用保存的，没有才用环境变量 `ANTHROPIC_API_KEY` / `DEEPSEEK_API_KEY`。
+- 网页服务只接受发给 `127.0.0.1` / `localhost` 的请求，防止别的网站借你的浏览器读写设置。
+
 ## v0.4.3 — 2026-10-13
 
 修复 DeepSeek 回复达到 `max_tokens` 后直接中止的问题。

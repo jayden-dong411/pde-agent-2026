@@ -42,6 +42,7 @@ pip install -e ".[dev]"            # 只用内置方法
 pip install -e ".[dev,llm]"        # 加上 Claude（需要 ANTHROPIC_API_KEY）
 pip install -e ".[dev,deepseek]"   # 加上 DeepSeek（需要 DEEPSEEK_API_KEY）
 
+pde-agent app                      # 打开网页版（见下面“网页版”）
 pde-agent curriculum --rounds 2    # 从基础方程开始练习
 pde-agent stats                    # 看学到的经验
 pde-agent skills                   # 看已知的方程和方法
@@ -52,7 +53,19 @@ pde-agent ask "在 [0,1] 上解 u_t = 0.01 u_xx，初值 sin(pi x)，两端为 0
 pde-agent curriculum --frontier --learn   # 让 agent 自己学会反应扩散、二维热方程、Burgers
 ```
 
-在 Python 里用：
+## 网页版
+
+```bash
+pde-agent app        # 打开 http://127.0.0.1:8765/
+```
+
+在浏览器里选一道课程题或自己填写题目，点“求解”就能看到解的图像、误差和 agent 试过的方法；也可以切到“用文字描述”，让大模型理解题目后再解（需要先设置好大模型，见“接入大模型”）。页面下方是经验记忆和已知方法。网页只在本机能打开，按 Ctrl+C 退出。
+
+![网页版](docs/app.png)
+
+## 在 Python 里用
+
+
 
 ```python
 from pde_agent import PDEAgent, PDEProblem
@@ -89,7 +102,8 @@ src/pde_agent/
   agent.py        主循环：选方法、求解、验证、加密、记忆、学习
   llm.py          大模型（Claude、DeepSeek）：理解自然语言问题、编写和修复新求解器
   curriculum.py   课程表
-  templates/      技能模块示例（反应扩散方程）
+  app.py          网页版的本地服务
+  templates/      技能模块示例（反应扩散方程）、网页
 ```
 
 ## 接入大模型
@@ -132,7 +146,7 @@ pde-agent --llm deepseek --model deepseek-flash curriculum --frontier --learn
 
 - [x] 基础方程、自我验证、经验记忆、技能库、课程表
 - [x] 可以选用 Claude 或 DeepSeek
+- [x] 网页版，带结果可视化
 - [ ] 把 PINN / 神经网络求解器作为一种技能接入，用同一套考试评判
 - [ ] 更多内置方程：二维热和波动、Neumann/Robin 边界、变系数
 - [ ] 让时间步长、CFL 数等参数也从经验中学习
-- [ ] 结果可视化

@@ -1,4 +1,4 @@
-"""Command line: ``pde-agent curriculum | solve | ask | learn | stats | skills``."""
+"""Command line: ``pde-agent curriculum | solve | ask | learn | stats | skills | app``."""
 
 from __future__ import annotations
 
@@ -118,6 +118,18 @@ def cmd_skills(args) -> int:
     return 0
 
 
+def cmd_app(args) -> int:
+    from .app import AppState, serve
+
+    agent = _agent(args)
+    try:
+        serve(AppState(agent, args.llm, args.model), args.port, open_browser=not args.no_browser)
+    except OSError as exc:
+        print(f"无法在端口 {args.port} 启动：{exc}（换一个端口：--port 8766）", file=sys.stderr)
+        return 1
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="pde-agent", description="会学习进化的 PDE 求解 agent")
     parser.add_argument("--version", action="version", version=f"%(prog)s {__version__}")
@@ -153,6 +165,11 @@ def main(argv: list[str] | None = None) -> int:
 
     sub.add_parser("stats", help="查看经验记忆").set_defaults(func=cmd_stats)
     sub.add_parser("skills", help="查看已知方程和方法").set_defaults(func=cmd_skills)
+
+    p = sub.add_parser("app", help="打开网页版（只在本机可访问）")
+    p.add_argument("--port", type=int, default=8765)
+    p.add_argument("--no-browser", action="store_true", help="不自动打开浏览器")
+    p.set_defaults(func=cmd_app)
 
     args = parser.parse_args(argv)
     args.llm = args.llm or default_provider()

@@ -121,7 +121,10 @@ class AppState:
             make = self._make_brain
             if make is None:
                 from .llm import make_brain as make
-            self.agent.brain = make(self.provider, self.model)
+                self.agent.brain = make(self.provider, self.model,
+                                        log_path=Path(self.agent.home) / "deepseek_requests.jsonl")
+            else:
+                self.agent.brain = make(self.provider, self.model)
         return self.agent.brain
 
     def info(self) -> dict:
@@ -193,8 +196,8 @@ class AppState:
             raise RequestError(f'需要先安装 SDK：pip install -e ".[{extra}]"', HTTPStatus.BAD_GATEWAY) from exc
 
     def _llm_message(self, exc: Exception) -> str:
-        name, key = PROVIDERS[self.provider]
-        return f"调用 {name} 失败：{exc}（检查 {key} 和网络）"
+        name, _ = PROVIDERS[self.provider]
+        return f"调用 {name} 失败：{exc}"
 
     @staticmethod
     def _tol(payload: dict) -> float:

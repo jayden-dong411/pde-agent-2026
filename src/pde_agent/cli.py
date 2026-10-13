@@ -9,7 +9,7 @@ import sys
 from pathlib import Path
 
 from . import __version__
-from .agent import PDEAgent
+from .agent import PDEAgent, default_home
 from .curriculum import basic_curriculum, frontier_lessons, run_curriculum
 from .llm import PROVIDERS, LLMError, default_provider
 from .problem import PDEProblem
@@ -20,7 +20,8 @@ def _brain(args):
         return None
     from .llm import make_brain
 
-    return make_brain(args.llm, args.model)
+    home = Path(args.home) if args.home else default_home()
+    return make_brain(args.llm, args.model, log_path=home / "deepseek_requests.jsonl")
 
 
 def _agent(args) -> PDEAgent:
@@ -183,8 +184,8 @@ def main(argv: list[str] | None = None) -> int:
         else:
             raise
     except LLMError as exc:
-        name, key = PROVIDERS[args.llm]
-        print(f"调用 {name} 失败：{exc}（检查 {key} 和网络）", file=sys.stderr)
+        name, _ = PROVIDERS[args.llm]
+        print(f"调用 {name} 失败：{exc}", file=sys.stderr)
     return 2
 
 

@@ -118,6 +118,10 @@ pde-agent --llm deepseek --model deepseek-v4-pro curriculum --frontier --learn  
 
 不写 `--llm` 时，只设置了 `DEEPSEEK_API_KEY` 就用 DeepSeek，否则用 Claude。
 
+DeepSeek 解析题目时使用 low 思考强度和 16,384 tokens 预算；写求解器时使用 high 和 131,072 tokens。思考过程也占生成预算。遇到长度截断时，最多自动重试一次，提高预算并改用 low，从完整对话重新生成。JSON 格式修复仍最多尝试 3 次，所以一次调用最多发起 4 次生成请求。
+
+网页和命令行把 DeepSeek 请求统计写入经验目录中的 `deepseek_requests.jsonl`（默认 `~/.pde_agent/deepseek_requests.jsonl`，也跟随 `--home` / `PDE_AGENT_HOME`）。记录包含预算、用量、结束原因、耗时和请求 ID，不含 Key、题目、代码或思考正文。旧程序需要重启后才能使用这些改动。
+
 | | Claude | DeepSeek |
 | --- | --- | --- |
 | 安装 | `pip install -e ".[llm]"` | `pip install -e ".[deepseek]"` |

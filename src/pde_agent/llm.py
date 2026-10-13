@@ -17,8 +17,12 @@ checked against the schema here and asked for again when they do not match.
 from __future__ import annotations
 
 import json
+import logging
 import os
+import time
 from dataclasses import dataclass
+from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any
 
 from .equations import EquationBook
@@ -32,8 +36,11 @@ FALLBACK_BETA = "server-side-fallback-2026-07-01"
 
 DEEPSEEK_MODEL = "deepseek-flash"
 DEEPSEEK_BASE_URL = "https://api.deepseek.com"
+DEEPSEEK_MAX_OUTPUT_TOKENS = 393216  # official Chat Completions output ceiling
+DEEPSEEK_PARSE_TOKENS = 16384
 # DeepSeek's thinking effort has the levels low, high and max
-_DEEPSEEK_EFFORT = {"low": "low", "medium": "high", "high": "high", "max": "max"}
+# Brain.parse_problem uses our internal medium level; parsing needs less reasoning.
+_DEEPSEEK_EFFORT = {"low": "low", "medium": "low", "high": "high", "max": "max"}
 
 # provider -> (display name, API key variable)
 PROVIDERS = {"claude": ("Claude", "ANTHROPIC_API_KEY"), "deepseek": ("DeepSeek", "DEEPSEEK_API_KEY")}
@@ -273,10 +280,13 @@ class DeepSeekBrain(Brain):
         client: Any = None,
         model: str = DEEPSEEK_MODEL,
         effort: str = "high",
-        max_tokens: int = 64000,
+        max_tokens: int = 131072,
         api_key: str | None = None,
         base_url: str = DEEPSEEK_BASE_URL,
+        log_path: Path | str | None = None,
     ):
+        if isinstance(max_tokens, bool) or not isinstance(max_tokens, int) or not 1 <= max_tokens <= DEEPSEEK_MAX_OUTPUT_TOKENS:
+            raise ValueError(f"max_tokens must be between 1 and {DEEPSEEK_MAX_OUTPUT_TOKENS}")
         if client is None:
             api_key = api_key or os.environ.get("DEEPSEEK_API_KEY")
             if not api_key:
@@ -294,6 +304,8 @@ class DeepSeekBrain(Brain):
         self.model = model
         self.effort = effort
         self.max_tokens = max_tokens
+        self.log_path = Path(log_path) if log_path is not None else None
+        self.last_request: dict[str, Any] | None = None
 
     def complete_json(
         self, system: str, messages: list[dict], schema: dict, effort: str | None = None, example: dict | None = None,
@@ -301,10 +313,26 @@ class DeepSeekBrain(Brain):
         """JSON-mode request; replies that are empty or off-schema are asked for again."""
         conversation = [{"role": "system", "content": f"{system}\n\n{json_instructions(schema, example)}"}, *messages]
         problem = ""
+        budget = min(self.max_tokens, DEEPSEEK_PARSE_TOKENS) if schema is PROBLEM_SCHEMA else self.max_tokens
+        request_effort = effort or self.effort
+        length_retried = False
         for _ in range(3):
-            text, finish = self._chat(conversation, effort or self.effort)
+            text, finish = self._chat(conversation, request_effort, budget)
             if finish == "length":
-                raise LLMError("the reply was cut off at max_tokens")
+                if not length_retried:
+                    # Start over from the intact conversation; partial JSON is never
+                    # executable and must not contaminate the next response.
+                    length_retried = True
+                    budget = min(budget * 2, DEEPSEEK_MAX_OUTPUT_TOKENS)
+                    request_effort = "low"
+                    text, finish = self._chat(conversation, request_effort, budget)
+                if finish == "length":
+                    usage = (self.last_request or {}).get("usage") or {}
+                    tokens = usage.get("completion_tokens")
+                    detail = f"，实际生成 {tokens} tokens" if tokens is not None else ""
+                    raise LLMError(f"DeepSeek 回复达到长度限制，自动重试一次后仍被截断"
+                                   f"（本次 max_tokens={budget}{detail}）。"
+                                   "请缩小任务范围，或检查用量日志中的生成与思考 token 统计。")
             if finish == "content_filter":
                 raise LLMError("DeepSeek's content filter stopped the reply")
             if finish == "insufficient_system_resource":
@@ -328,29 +356,69 @@ class DeepSeekBrain(Brain):
             ]
         raise LLMError(f"no usable JSON reply after 3 attempts: {problem}")
 
-    def _chat(self, messages: list[dict], effort: str) -> tuple[str, str | None]:
+    def _chat(self, messages: list[dict], effort: str, max_tokens: int | None = None) -> tuple[str, str | None]:
         """Stream one chat completion; returns the reply text and the finish reason."""
         parts, finish = [], None
+        budget = self.max_tokens if max_tokens is None else max_tokens
+        level = _DEEPSEEK_EFFORT.get(effort, "high")
+        started = time.monotonic()
+        stream = None
+        record: dict[str, Any] = {
+            "time": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+            "model": self.model, "max_tokens": budget, "reasoning_effort": level,
+            "request_id": None, "finish_reason": None, "usage": None,
+            "content_chars": 0, "reasoning_chars": 0,
+        }
         try:
             stream = self.client.chat.completions.create(
                 model=self.model,
                 messages=messages,
-                max_tokens=self.max_tokens,
+                max_tokens=budget,
                 response_format={"type": "json_object"},
-                reasoning_effort=_DEEPSEEK_EFFORT.get(effort, "high"),
+                reasoning_effort=level,
                 extra_body={"thinking": {"type": "enabled"}},
                 stream=True,
+                stream_options={"include_usage": True},
             )
             for chunk in stream:
+                record["request_id"] = getattr(chunk, "id", None) or record["request_id"]
+                usage = getattr(chunk, "usage", None)
+                if usage is not None:
+                    record["usage"] = usage if isinstance(usage, dict) else usage.model_dump(mode="json")
                 if not chunk.choices:
                     continue
                 choice = chunk.choices[0]
                 if choice.delta is not None and choice.delta.content:
                     parts.append(choice.delta.content)
+                    record["content_chars"] += len(choice.delta.content)
+                if choice.delta is not None:
+                    record["reasoning_chars"] += len(getattr(choice.delta, "reasoning_content", None) or "")
                 finish = choice.finish_reason or finish
         except Exception as exc:  # credentials, balance, network, rate limits after the SDK's retries
+            record["error_type"] = type(exc).__name__
             raise LLMError(f"{type(exc).__name__}: {exc}") from exc
+        finally:
+            record["finish_reason"] = finish
+            record["elapsed_seconds"] = round(time.monotonic() - started, 3)
+            self.last_request = record
+            self._record_request(record)
+            if stream is not None and hasattr(stream, "close"):
+                stream.close()
+        if finish is None:
+            raise LLMError("DeepSeek 回复流提前结束，未收到结束标记；请重试。")
         return "".join(parts), finish
+
+    def _record_request(self, record: dict[str, Any]) -> None:
+        """Persist metadata only: no credentials, prompt, reply or reasoning text."""
+        if self.log_path is None:
+            return
+        try:
+            self.log_path.parent.mkdir(parents=True, exist_ok=True)
+            with self.log_path.open("a", encoding="utf-8") as fh:
+                fh.write(json.dumps(record, ensure_ascii=False) + "\n")
+        except OSError:
+            # A diagnostic file must never turn a successful API call into a failure.
+            logging.getLogger(__name__).warning("Could not write DeepSeek usage log: %s", self.log_path)
 
 
 def json_instructions(schema: dict, example: dict | None = None) -> str:
@@ -411,11 +479,11 @@ def default_provider(env: dict | None = None) -> str:
     return "claude"
 
 
-def make_brain(provider: str, model: str | None = None) -> Brain:
+def make_brain(provider: str, model: str | None = None, *, log_path: Path | str | None = None) -> Brain:
     if provider == "claude":
         return ClaudeBrain(model=model or DEFAULT_MODEL)
     if provider == "deepseek":
-        return DeepSeekBrain(model=model or DEEPSEEK_MODEL)
+        return DeepSeekBrain(model=model or DEEPSEEK_MODEL, log_path=log_path)
     raise ValueError(f"unknown language model provider {provider!r} (use one of {', '.join(PROVIDERS)})")
 
 

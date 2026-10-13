@@ -139,6 +139,15 @@ def test_model_failure_is_reported(serve):
 
     status, data = call(serve(make_brain=broken) + "/api/ask", {"text": "……"})
     assert status == 502 and "connection refused" in data["error"]
+    assert "检查 DEEPSEEK_API_KEY 和网络" not in data["error"]
+
+
+def test_truncation_is_reported_without_credentials_advice(serve):
+    client = ScriptedOpenAI([("length", "{")] * 2)
+    base = serve(make_brain=lambda provider, model: DeepSeekBrain(client=client))
+    status, data = call(base + "/api/ask", {"text": "求解热方程"})
+    assert status == 502 and "自动重试一次后仍被截断" in data["error"]
+    assert "Key" not in data["error"] and "网络" not in data["error"]
 
 
 def test_cli_app_reports_a_busy_port(tmp_path, capsys):

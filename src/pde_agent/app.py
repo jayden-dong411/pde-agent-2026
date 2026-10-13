@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import math
+import os
 import threading
 import webbrowser
 from http import HTTPStatus
@@ -125,10 +126,15 @@ class AppState:
 
     def info(self) -> dict:
         name, key = PROVIDERS[self.provider]
+        home = Path(self.agent.home)
+        try:
+            home = Path("~") / home.relative_to(Path.home())
+        except ValueError:
+            pass
         return {
             "version": __version__,
-            "home": str(self.agent.home),
-            "llm": {"provider": self.provider, "name": name, "key": key},
+            "home": str(home),
+            "llm": {"provider": self.provider, "name": name, "key": key, "ready": bool(os.environ.get(key))},
             "equations": [
                 {"kind": eq.kind, "form": eq.form, "time_order": eq.time_order, "defaults": eq.defaults,
                  "description": eq.description, "origin": eq.origin}
@@ -175,6 +181,9 @@ class AppState:
                     "episodes": len(self.agent.memory.episodes)}
 
     def _brain_or_error(self):
+        name, key = PROVIDERS[self.provider]
+        if self.agent.brain is None and self._make_brain is None and not os.environ.get(key):
+            raise RequestError(f"还没有设置 {key}：设置好以后重新运行 pde-agent app（用 {name}）", HTTPStatus.BAD_GATEWAY)
         try:
             return self.brain()
         except LLMError as exc:

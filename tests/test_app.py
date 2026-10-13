@@ -45,14 +45,15 @@ def call(url, body=None, content_type="application/json"):
     return status, (json.loads(raw) if kind.startswith("application/json") else raw.decode())
 
 
-def test_page_and_info(serve):
+def test_page_and_info(serve, monkeypatch):
+    monkeypatch.delenv("DEEPSEEK_API_KEY", raising=False)
     base = serve()
     status, page = call(base + "/")
     assert status == 200 and "<title>PDE Agent</title>" in page and "/api/solve" in page
     assert "http" not in page.replace("http://www.w3.org/2000/svg", "")  # no outside resources
     status, info = call(base + "/api/info")
     assert status == 200
-    assert info["llm"] == {"provider": "deepseek", "name": "DeepSeek", "key": "DEEPSEEK_API_KEY"}
+    assert info["llm"] == {"provider": "deepseek", "name": "DeepSeek", "key": "DEEPSEEK_API_KEY", "ready": False}
     assert {"poisson", "heat", "advection", "wave"} <= {eq["kind"] for eq in info["equations"]}
     assert any(m["origin"] == "builtin" for m in info["methods"])
     assert len(info["examples"]) > len(basic_curriculum())  # frontier lessons too
@@ -115,6 +116,12 @@ def test_ask_without_key_is_a_clear_error(serve, monkeypatch):
     assert status == 502 and "DEEPSEEK_API_KEY" in data["error"]
     status, data = call(base + "/api/ask", {"text": "  "})
     assert status == 400
+
+
+def test_missing_claude_key_is_named(serve, monkeypatch):
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    status, data = call(serve(provider="claude") + "/api/ask", {"text": "求解热方程"})
+    assert status == 502 and "还没有设置 ANTHROPIC_API_KEY" in data["error"]
 
 
 def test_ask_with_a_model(serve):

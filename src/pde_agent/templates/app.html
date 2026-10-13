@@ -6,181 +6,364 @@
 <title>PDE Agent</title>
 <style>
 :root {
-  --bg: #f6f7f9; --panel: #ffffff; --text: #1d2330; --muted: #667085; --border: #dde1e8;
-  --accent: #2f6fdb; --accent-text: #ffffff; --ok: #1a7f4b; --bad: #c0392b; --warn: #a15c00;
-  --exact: #e0782b; --code: #f0f2f5;
+  --ground: #f3f4f1; --surface: #ffffff; --soft: #f6f8f5; --soft-line: #e3e7e1; --track: #eef0ec;
+  --line: #dde1dc; --field-line: #cdd3cd; --ink: #14212b; --muted: #5b6670;
+  --accent: #0e6b6b; --accent-ink: #0b5656; --accent-soft: #e3f0ee; --on-accent: #ffffff;
+  --exact: #c4511f; --ok: #1a6a43; --ok-soft: #e2f2e9; --bad: #b42318; --bad-soft: #fbe9e7;
+  --bar: #14212b; --bar-raised: #22323e; --bar-line: #3a4a56; --bar-ink: #f3f4f1; --bar-muted: #b9c4cc; --bar-accent: #7fc4bc;
+  --hero: #14212b; --hero-ink: #f3f4f1; --hero-muted: #b9c4cc; --hero-accent: #7fc4bc;
+  --sans: "IBM Plex Sans", -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Hiragino Sans GB", "Noto Sans SC", "Microsoft YaHei", sans-serif;
+  --mono: "IBM Plex Mono", ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  --math: "Source Serif 4", "STIX Two Text", "Cambria Math", Georgia, "Times New Roman", serif;
+  color-scheme: light;
 }
 @media (prefers-color-scheme: dark) {
   :root {
-    --bg: #14171c; --panel: #1d2128; --text: #e6e9ef; --muted: #98a2b3; --border: #343a45;
-    --accent: #5b93f0; --accent-text: #0d1117; --ok: #4cc38a; --bad: #f07167; --warn: #f0b35b;
-    --exact: #f0a35b; --code: #262b34;
+    --ground: #10171d; --surface: #172129; --soft: #1c2831; --soft-line: #2a3742; --track: #24313b;
+    --line: #2a3742; --field-line: #3a4955; --ink: #e8edf0; --muted: #9aa8b2;
+    --accent: #4fb3a8; --accent-ink: #8fd6cd; --accent-soft: #173a3a; --on-accent: #0b1a1a;
+    --exact: #f0915e; --ok: #63c99a; --ok-soft: #173326; --bad: #f2867a; --bad-soft: #3a1d1a;
+    --bar: #0b1116; --bar-raised: #1c2831; --bar-line: #2a3742;
+    --hero: #0b1116; --hero-ink: #e8edf0;
+    color-scheme: dark;
   }
 }
 * { box-sizing: border-box; }
-body { margin: 0; background: var(--bg); color: var(--text);
-  font: 14px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif; }
-header { display: flex; align-items: baseline; gap: 12px; flex-wrap: wrap; padding: 14px 20px;
-  border-bottom: 1px solid var(--border); background: var(--panel); }
-header h1 { font-size: 18px; margin: 0; }
-header .meta { color: var(--muted); font-size: 13px; }
-main { display: grid; grid-template-columns: minmax(300px, 420px) 1fr; gap: 16px; padding: 16px 20px;
-  max-width: 1400px; margin: 0 auto; }
-@media (max-width: 860px) { main { grid-template-columns: 1fr; padding: 12px 16px; } }
-section.panel { background: var(--panel); border: 1px solid var(--border); border-radius: 10px; padding: 16px; min-width: 0; }
-h2 { font-size: 15px; margin: 0 0 12px; }
-.tabs { display: flex; gap: 4px; margin-bottom: 12px; border-bottom: 1px solid var(--border); }
-.tabs button { background: none; border: none; border-bottom: 2px solid transparent; color: var(--muted);
-  padding: 6px 10px; cursor: pointer; font: inherit; }
-.tabs button.active { color: var(--text); border-bottom-color: var(--accent); }
-label { display: block; font-size: 12px; color: var(--muted); margin: 8px 0 3px; }
-input[type=text], input[type=number], select, textarea { width: 100%; padding: 6px 8px; border: 1px solid var(--border);
-  border-radius: 6px; background: var(--bg); color: var(--text); font: inherit; }
-input.mono, textarea.mono { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 13px; }
-textarea { min-height: 120px; resize: vertical; }
-.row { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
-.check { display: flex; align-items: center; gap: 6px; margin-top: 10px; color: var(--text); font-size: 13px; }
-.hint { color: var(--muted); font-size: 12px; margin: 4px 0 0; }
-.actions { display: flex; gap: 8px; margin-top: 14px; align-items: center; flex-wrap: wrap; }
-button.primary { background: var(--accent); color: var(--accent-text); border: none; border-radius: 6px;
-  padding: 8px 18px; font: inherit; font-weight: 600; cursor: pointer; }
-button.primary:disabled { opacity: .5; cursor: wait; }
+body { margin: 0; background: var(--ground); color: var(--ink); font: 14px/1.55 var(--sans); }
+button, input, select, textarea { font: inherit; color: inherit; }
+a { color: var(--accent); }
+.mono { font-family: var(--mono); }
 .hidden { display: none !important; }
-.status { font-size: 13px; color: var(--muted); }
-.error { color: var(--bad); white-space: pre-wrap; }
-.badge { display: inline-block; padding: 1px 8px; border-radius: 10px; font-size: 12px; font-weight: 600; }
-.badge.ok { color: var(--ok); border: 1px solid var(--ok); }
-.badge.bad { color: var(--bad); border: 1px solid var(--bad); }
-.summary { margin: 8px 0 12px; }
-.metrics { display: grid; grid-template-columns: repeat(auto-fit, minmax(120px, 1fr)); gap: 8px; margin-bottom: 12px; }
-.metric { background: var(--bg); border-radius: 8px; padding: 8px 10px; }
-.metric .k { font-size: 12px; color: var(--muted); }
-.metric .v { font-size: 15px; font-weight: 600; word-break: break-all; }
-.plots { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 12px; }
-figure { margin: 0; }
-figcaption { font-size: 12px; color: var(--muted); margin-bottom: 4px; }
+:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+
+/* top bar */
+.topbar { background: var(--bar); color: var(--bar-ink); }
+.topbar .wrap { max-width: 1320px; margin: 0 auto; padding: 12px 32px; display: flex; flex-wrap: wrap; align-items: center; gap: 12px 24px; }
+.brand { display: flex; align-items: center; gap: 12px; }
+.brand b { font-size: 17px; font-weight: 600; }
+.chip { font-family: var(--mono); font-size: 12px; padding: 2px 8px; border: 1px solid var(--bar-line); border-radius: 999px; color: var(--bar-muted); }
+.nav { display: flex; gap: 4px; flex-wrap: wrap; }
+.nav a { color: var(--bar-muted); text-decoration: none; padding: 8px 14px; border-radius: 8px; }
+.nav a:hover { color: var(--bar-ink); background: var(--bar-raised); }
+.nav a.current { color: var(--bar-ink); background: var(--bar-raised); font-weight: 500; }
+.llm { margin-left: auto; display: flex; align-items: center; gap: 10px; font-size: 13px; color: var(--bar-muted); flex-wrap: wrap; }
+.dot { width: 8px; height: 8px; border-radius: 50%; background: #e0a43a; flex: none; }
+.dot.ready { background: #5fc79a; }
+
+/* layout */
+main { max-width: 1320px; margin: 0 auto; padding: 28px 32px 48px; display: flex; flex-direction: column; gap: 24px; }
+.columns { display: flex; flex-wrap: wrap; gap: 24px; align-items: flex-start; }
+.card { background: var(--surface); border: 1px solid var(--line); border-radius: 14px; }
+.composer { flex: 1 1 380px; max-width: 460px; min-width: 0; overflow: hidden; }
+.results { flex: 999 1 560px; min-width: 0; display: flex; flex-direction: column; gap: 16px; }
+h2 { margin: 0; font-size: 16px; font-weight: 600; }
+h3 { margin: 0; font-size: 15px; font-weight: 600; }
+@media (max-width: 720px) {
+  .topbar .wrap, main { padding-left: 16px; padding-right: 16px; }
+  main { padding-top: 16px; }
+  .llm { margin-left: 0; }
+  .composer { max-width: none; }
+}
+
+/* composer */
+.composer-head { padding: 20px 22px 0; display: flex; flex-direction: column; gap: 14px; }
+.segmented { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 4px; padding: 4px; background: var(--track); border-radius: 10px; }
+.segmented button { height: 40px; border: 0; border-radius: 8px; background: transparent; color: var(--muted); cursor: pointer; }
+.segmented button[aria-selected="true"] { background: var(--surface); color: var(--ink); font-weight: 500; box-shadow: 0 1px 2px rgba(20, 33, 43, .14); }
+.composer-body { padding: 18px 22px 22px; display: flex; flex-direction: column; gap: 16px; }
+.field { display: flex; flex-direction: column; gap: 6px; min-width: 0; }
+.field > label, .label { font-size: 12px; font-weight: 500; color: var(--muted); }
+.field > label span { font-weight: 400; }
+.pair { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
+input[type=text], select, textarea { width: 100%; min-width: 0; border: 1px solid var(--field-line); border-radius: 9px; background: var(--surface); color: var(--ink); }
+input[type=text], select { height: 44px; padding: 0 12px; }
+input[type=text] { font-family: var(--mono); font-size: 13px; }
+textarea { min-height: 140px; padding: 10px 12px; resize: vertical; line-height: 1.6; }
+input:focus, select:focus, textarea:focus { outline: none; border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft); }
+.equation { background: var(--soft); border: 1px solid var(--soft-line); border-radius: 10px; padding: 14px 16px; display: flex; flex-direction: column; gap: 6px; }
+.equation .top { display: flex; justify-content: space-between; align-items: center; gap: 8px; flex-wrap: wrap; }
+.tag { font-family: var(--mono); font-size: 12px; color: var(--accent-ink); background: var(--accent-soft); padding: 1px 8px; border-radius: 999px; }
+.formula { font-family: var(--math); font-style: italic; font-size: 23px; line-height: 1.35; overflow-wrap: anywhere; }
+.formula sub { font-size: 60%; }
+.formula sup { font-size: 60%; }
+.equation .where { font-size: 12px; color: var(--muted); overflow-wrap: anywhere; }
+.row-select { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 12px; }
+details.more { border-top: 1px solid var(--soft-line); padding-top: 10px; }
+details.more summary { cursor: pointer; font-size: 13px; font-weight: 500; color: var(--accent-ink); min-height: 32px; display: flex; align-items: center; gap: 6px; list-style: none; }
+details.more summary::-webkit-details-marker { display: none; }
+details.more summary svg { transition: transform .15s; }
+details.more[open] summary svg { transform: rotate(90deg); }
+details.more .inner { display: flex; flex-direction: column; gap: 12px; padding-top: 8px; }
+.hint { font-size: 12px; color: var(--muted); margin: 0; }
+.hint code { font-family: var(--mono); background: var(--track); padding: 1px 4px; border-radius: 4px; }
+.tol { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)) minmax(0, 1.2fr); gap: 6px; }
+.tol button { height: 40px; border: 1px solid var(--field-line); border-radius: 9px; background: var(--surface); font-family: var(--mono); font-size: 13px; cursor: pointer; }
+.tol button[aria-pressed="true"] { border: 1.5px solid var(--accent); background: var(--accent-soft); color: var(--accent-ink); font-weight: 500; }
+.tol input { height: 40px; }
+.check { display: flex; gap: 10px; align-items: flex-start; font-size: 13px; cursor: pointer; min-height: 44px; }
+.check input { width: 18px; height: 18px; margin: 2px 0 0; accent-color: var(--accent); flex: none; }
+.check small { display: block; color: var(--muted); font-size: 12px; }
+.go { height: 48px; border: 0; border-radius: 10px; background: var(--accent); color: var(--on-accent); font-size: 15px; font-weight: 600; cursor: pointer; display: flex; align-items: center; justify-content: center; gap: 8px; }
+.go:hover { filter: brightness(1.08); }
+.go:disabled { cursor: wait; opacity: .75; }
+.spinner { width: 16px; height: 16px; border: 2px solid currentColor; border-right-color: transparent; border-radius: 50%; animation: spin .8s linear infinite; }
+@keyframes spin { to { transform: rotate(360deg); } }
+.status { font-size: 13px; color: var(--muted); margin: 0; text-align: center; }
+.alert { margin: 0; padding: 10px 12px; border-radius: 9px; background: var(--bad-soft); color: var(--bad); font-size: 13px; white-space: pre-wrap; overflow-wrap: anywhere; }
+
+/* results */
+.panel { padding: 22px 24px; display: flex; flex-direction: column; gap: 18px; }
+.result-head { display: flex; flex-wrap: wrap; align-items: center; gap: 10px 14px; }
+.badge { display: inline-flex; align-items: center; gap: 6px; padding: 3px 10px; border-radius: 999px; font-size: 13px; font-weight: 500; }
+.badge.ok { background: var(--ok-soft); color: var(--ok); }
+.badge.bad { background: var(--bad-soft); color: var(--bad); }
+.result-meta { font-size: 13px; color: var(--muted); }
+.message { margin: 0; font-size: 13px; color: var(--muted); }
+.stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: 12px; }
+.stat { padding: 14px 16px; border-radius: 10px; background: var(--soft); border: 1px solid var(--soft-line); display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.stat .k { font-size: 12px; color: var(--muted); }
+.stat .v { font-family: var(--mono); font-size: 18px; font-weight: 500; overflow-wrap: anywhere; }
+.stat.hero { background: var(--hero); border-color: var(--hero); color: var(--hero-ink); }
+.stat.hero .k { color: var(--hero-muted); }
+.stat.hero .v { font-size: 26px; }
+.stat.hero .sub { color: var(--hero-accent); }
+.stat .sub { font-size: 12px; color: var(--muted); }
+figure { margin: 0; display: flex; flex-direction: column; gap: 10px; min-width: 0; }
+.fig-head { display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 8px; }
+figcaption { font-size: 13px; font-weight: 500; }
+.legend { display: flex; gap: 16px; font-size: 12px; color: var(--muted); }
+.legend span { display: inline-flex; align-items: center; gap: 6px; }
+.swatch { width: 18px; height: 3px; border-radius: 2px; background: var(--accent); }
+.swatch.dash { height: 0; border-top: 2px dashed var(--exact); background: none; }
 svg.chart { width: 100%; height: auto; display: block; }
-svg.chart text { fill: var(--muted); font-size: 11px; }
-canvas { width: 100%; height: auto; image-rendering: pixelated; border-radius: 4px; display: block; }
-.scale { display: flex; justify-content: space-between; font-size: 11px; color: var(--muted); }
-.scale .bar { flex: 1; height: 8px; margin: 4px 8px; border-radius: 4px;
-  background: linear-gradient(90deg, #30123b, #4662d7, #36aaf9, #1ae4b6, #72fe5e, #c7ef34, #faba39, #f66b19, #ca2a04); }
+svg.chart text { fill: var(--muted); font: 11px var(--mono); }
+svg.chart .grid { stroke: var(--soft-line); }
+svg.chart .u { stroke: var(--accent); }
+svg.chart .area { fill: var(--accent); fill-opacity: .08; }
+svg.chart .exact { stroke: var(--exact); }
+.plots { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 16px; }
+canvas { width: 100%; height: auto; image-rendering: pixelated; border-radius: 8px; display: block; }
+.scale { display: flex; align-items: center; gap: 8px; font: 11px var(--mono); color: var(--muted); }
+.scale .ramp { flex: 1; height: 8px; border-radius: 4px; background: linear-gradient(90deg, #30123b, #4662d7, #36aaf9, #1ae4b6, #72fe5e, #c7ef34, #faba39, #f66b19, #ca2a04); }
+.empty { padding: 48px 24px; display: flex; flex-direction: column; align-items: center; gap: 10px; text-align: center; color: var(--muted); }
+.empty b { color: var(--ink); font-size: 15px; font-weight: 600; }
+.steps { margin: 0; padding: 0; list-style: none; }
+.steps li { display: flex; gap: 14px; align-items: flex-start; padding: 10px 0; border-bottom: 1px solid var(--track); }
+.steps li:last-child { border-bottom: 0; }
+.num { flex: none; width: 24px; height: 24px; border-radius: 50%; background: var(--accent-soft); color: var(--accent-ink); font-size: 12px; font-weight: 600; display: flex; align-items: center; justify-content: center; }
+.num.ok { background: var(--ok-soft); color: var(--ok); }
+.num.bad { background: var(--bad-soft); color: var(--bad); }
+.step-body { min-width: 0; flex: 1; }
+.step-line { display: flex; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
+.step-line b { font-weight: 500; }
+.step-line .mono { font-size: 12px; color: var(--muted); }
+.step-note { font-size: 13px; color: var(--muted); overflow-wrap: anywhere; }
+
+/* memory and methods */
+.section-head { display: flex; justify-content: space-between; align-items: baseline; flex-wrap: wrap; gap: 8px; }
+.section-head span { font-size: 13px; color: var(--muted); }
+.memory { display: grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); gap: 12px; }
+.mem { border: 1px solid var(--soft-line); border-radius: 10px; padding: 14px 16px; display: flex; flex-direction: column; gap: 10px; min-width: 0; }
+.mem .top { display: flex; justify-content: space-between; gap: 8px; align-items: baseline; }
+.mem .sig { font-family: var(--mono); font-size: 13px; font-weight: 500; overflow-wrap: anywhere; }
+.mem .rate { font-size: 12px; color: var(--ok); white-space: nowrap; }
+.mem .rate.low { color: var(--bad); }
+.mem .method { display: flex; flex-direction: column; gap: 6px; }
+.mem .method-line { display: flex; justify-content: space-between; gap: 8px; font-size: 13px; color: var(--muted); }
+.mem .method-line .mono { color: var(--ink); overflow-wrap: anywhere; }
+.meter { height: 6px; border-radius: 3px; background: var(--track); overflow: hidden; }
+.meter i { display: block; height: 100%; border-radius: 3px; background: var(--accent); }
 .table-wrap { overflow-x: auto; }
-table { width: 100%; border-collapse: collapse; font-size: 13px; margin-top: 8px; }
-th, td { text-align: left; padding: 5px 8px; border-bottom: 1px solid var(--border); white-space: nowrap; }
-th { color: var(--muted); font-weight: 500; }
-td.num { font-variant-numeric: tabular-nums; }
-.legend { display: flex; gap: 14px; font-size: 12px; color: var(--muted); }
-.legend i { display: inline-block; width: 14px; height: 3px; vertical-align: middle; margin-right: 4px; }
-.wide { grid-column: 1 / -1; }
-code { background: var(--code); padding: 1px 4px; border-radius: 4px; font-size: 12px; }
+table { width: 100%; border-collapse: collapse; font-size: 13px; }
+th, td { text-align: left; padding: 8px 10px; border-bottom: 1px solid var(--track); white-space: nowrap; }
+td.desc { white-space: normal; min-width: 220px; color: var(--muted); }
+th { color: var(--muted); font-weight: 500; font-size: 12px; }
+.origin { font-size: 12px; padding: 1px 8px; border-radius: 999px; background: var(--track); color: var(--muted); }
+.origin.learned { background: var(--accent-soft); color: var(--accent-ink); }
 </style>
 </head>
 <body>
-<header>
-  <h1>PDE Agent</h1>
-  <span class="meta" id="meta">加载中…</span>
+<header class="topbar">
+  <div class="wrap">
+    <div class="brand">
+      <svg width="30" height="30" viewBox="0 0 30 30" fill="none" aria-hidden="true"><rect x="1" y="1" width="28" height="28" rx="7" stroke="#7fc4bc" stroke-width="1.5"/><path d="M6 19 C10 6, 14 6, 15 15 S20 24, 24 11" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg>
+      <b>PDE Agent</b>
+      <span class="chip" id="version">…</span>
+    </div>
+    <nav class="nav" aria-label="页面导航">
+      <a href="#solve" class="current">求解</a>
+      <a href="#memory">经验记忆</a>
+      <a href="#methods">方程和方法</a>
+    </nav>
+    <div class="llm">
+      <span class="dot" id="llm-dot"></span>
+      <span id="llm-text">加载中…</span>
+      <span aria-hidden="true">·</span>
+      <span class="mono" id="home"></span>
+    </div>
+  </div>
 </header>
-<main>
-  <section class="panel">
-    <div class="tabs">
-      <button data-tab="form" class="active">填写题目</button>
-      <button data-tab="text">用文字描述</button>
-    </div>
 
-    <div id="tab-form">
-      <label for="preset">从课程里选一道题</label>
-      <select id="preset"><option value="">（自己填写）</option></select>
-
-      <div class="row">
-        <div>
-          <label for="kind">方程</label>
-          <select id="kind"></select>
-        </div>
-        <div>
-          <label for="boundary">边界</label>
-          <select id="boundary">
-            <option value="dirichlet">Dirichlet（给定边界值）</option>
-            <option value="periodic">周期</option>
-          </select>
+<main id="solve">
+  <div class="columns">
+    <section class="card composer" aria-labelledby="composer-title">
+      <div class="composer-head">
+        <h2 id="composer-title">题目</h2>
+        <div class="segmented" role="tablist" aria-label="输入方式">
+          <button role="tab" id="tab-form" aria-selected="true" aria-controls="pane-form">填写题目</button>
+          <button role="tab" id="tab-text" aria-selected="false" aria-controls="pane-text">用一句话描述</button>
         </div>
       </div>
-      <p class="hint" id="form-hint"></p>
 
-      <div class="row">
-        <div>
-          <label for="domain">区域（每维 a,b，用 ; 分隔）</label>
-          <input type="text" id="domain" class="mono" value="0,1">
+      <div class="composer-body">
+        <div id="pane-form" role="tabpanel" aria-labelledby="tab-form" style="display: flex; flex-direction: column; gap: 16px">
+          <div class="field">
+            <label for="preset">从课程里选一道题</label>
+            <select id="preset"><option value="">（自己填写）</option></select>
+          </div>
+
+          <div class="equation" aria-live="polite">
+            <div class="top">
+              <span class="label">方程</span>
+              <span class="tag" id="eq-tag"></span>
+            </div>
+            <div class="formula" id="formula"></div>
+            <div class="where" id="where"></div>
+          </div>
+
+          <div class="row-select">
+            <div class="field">
+              <label for="kind">方程类型</label>
+              <select id="kind"></select>
+            </div>
+            <div class="field">
+              <label for="boundary">边界</label>
+              <select id="boundary">
+                <option value="dirichlet">Dirichlet</option>
+                <option value="periodic">周期</option>
+              </select>
+            </div>
+          </div>
+
+          <div class="pair">
+            <div class="field">
+              <label for="domain">区域 <span>· 每维 a,b，用 ; 分隔</span></label>
+              <input type="text" id="domain" value="0, 1">
+            </div>
+            <div class="field">
+              <label for="t_final">终止时间 <span>· 稳态留空</span></label>
+              <input type="text" id="t_final">
+            </div>
+          </div>
+
+          <div class="field">
+            <label for="coefficients">系数 <span>· 如 alpha = 0.1, c = 1</span></label>
+            <input type="text" id="coefficients">
+          </div>
+
+          <div class="field">
+            <label for="exact">精确解 <span>· 有了就直接算误差</span></label>
+            <input type="text" id="exact">
+          </div>
+
+          <details class="more" id="more">
+            <summary><svg width="12" height="12" viewBox="0 0 12 12" fill="none" aria-hidden="true"><path d="M4 2l4 4-4 4" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg>更多条件：源项、初值、边界值、初速度</summary>
+            <div class="inner">
+              <div class="field">
+                <label for="source">源项 f</label>
+                <input type="text" id="source" value="0">
+              </div>
+              <div class="field">
+                <label for="initial">初值 u(x, 0)</label>
+                <input type="text" id="initial">
+              </div>
+              <div class="pair">
+                <div class="field">
+                  <label for="boundary_value">边界值</label>
+                  <input type="text" id="boundary_value">
+                </div>
+                <div class="field">
+                  <label for="initial_velocity">初速度 u<sub>t</sub>(x, 0)</label>
+                  <input type="text" id="initial_velocity">
+                </div>
+              </div>
+              <p class="hint">没填的从精确解推出来，源项默认 0。表达式用 x、y、t 和 sin、cos、exp、pi，例如 <code>sin(pi*x)*exp(-t)</code>。</p>
+            </div>
+          </details>
         </div>
-        <div>
-          <label for="t_final">终止时间（稳态留空）</label>
-          <input type="text" id="t_final" class="mono">
+
+        <div id="pane-text" role="tabpanel" aria-labelledby="tab-text" class="hidden" style="flex-direction: column; gap: 8px">
+          <div class="field">
+            <label for="text">用一句话描述题目</label>
+            <textarea id="text" placeholder="例如：一根长 1 的杆，两端温度保持 0，初始温度 sin(pi x)，热扩散系数 0.1，求 t = 0.5 时的温度分布。"></textarea>
+          </div>
+          <p class="hint" id="llm-hint"></p>
+        </div>
+
+        <div class="field">
+          <span class="label" id="tol-label">精度要求</span>
+          <div class="tol" role="group" aria-labelledby="tol-label">
+            <button type="button" data-tol="1e-2">1e-2</button>
+            <button type="button" data-tol="1e-3" aria-pressed="true">1e-3</button>
+            <button type="button" data-tol="1e-4">1e-4</button>
+            <input type="text" id="tol" value="1e-3" aria-label="自定义精度要求">
+          </div>
+        </div>
+
+        <label class="check" id="learn-row">
+          <input type="checkbox" id="learn">
+          <span>没有合适的方法时，让大模型学一个新方法<small>新方法要先通过考试才会被记住</small></span>
+        </label>
+
+        <button class="go" id="go" type="button">
+          <svg width="16" height="16" viewBox="0 0 16 16" fill="none" aria-hidden="true"><path d="M4 2.5v11l9-5.5-9-5.5z" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"/></svg>
+          <span>求解</span>
+        </button>
+        <p class="status hidden" id="status" role="status"></p>
+        <p class="alert hidden" id="error" role="alert"></p>
+      </div>
+    </section>
+
+    <section class="results" aria-labelledby="result-title">
+      <div class="card panel">
+        <div class="result-head">
+          <h2 id="result-title">结果</h2>
+          <span class="badge hidden" id="badge"></span>
+          <span class="result-meta" id="result-meta"></span>
+        </div>
+        <div class="empty" id="empty">
+          <svg width="44" height="44" viewBox="0 0 44 44" fill="none" aria-hidden="true"><rect x="3" y="3" width="38" height="38" rx="10" stroke="currentColor" stroke-width="1.5"/><path d="M10 28 C16 10, 21 10, 22 22 S29 34, 34 15" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg>
+          <b>还没有结果</b>
+          <span>在左边选一道课程题或自己填写，点“求解”。</span>
+        </div>
+        <div id="result" class="hidden" style="display: flex; flex-direction: column; gap: 18px">
+          <p class="message hidden" id="message"></p>
+          <div class="stats" id="stats"></div>
+          <div id="plots"></div>
         </div>
       </div>
-      <label for="coefficients">系数（如 alpha=0.1, c=1）</label>
-      <input type="text" id="coefficients" class="mono">
-      <label for="source">源项 f</label>
-      <input type="text" id="source" class="mono" value="0">
-      <label for="exact">精确解（可选，有了就用它检验误差）</label>
-      <input type="text" id="exact" class="mono">
-      <label for="initial">初值 u(x,0)（可选）</label>
-      <input type="text" id="initial" class="mono">
-      <div class="row">
-        <div>
-          <label for="boundary_value">边界值（可选）</label>
-          <input type="text" id="boundary_value" class="mono">
-        </div>
-        <div>
-          <label for="initial_velocity">初速度 u_t(x,0)（波动方程）</label>
-          <input type="text" id="initial_velocity" class="mono">
-        </div>
+
+      <div class="card panel hidden" id="steps-card">
+        <h3>agent 是怎么解的</h3>
+        <ol class="steps" id="steps"></ol>
       </div>
-      <p class="hint">表达式用 x、y、t 和 sin、cos、exp、pi 等，例如 <code>sin(pi*x)*exp(-t)</code>。</p>
-    </div>
+    </section>
+  </div>
 
-    <div id="tab-text" class="hidden">
-      <label for="text">描述题目</label>
-      <textarea id="text" placeholder="例如：一根长 1 的杆，两端温度保持 0，初始温度 sin(pi x)，热扩散系数 0.1，求 t=0.5 时的温度分布。"></textarea>
-      <p class="hint" id="llm-hint"></p>
+  <section class="card panel" id="memory" aria-labelledby="memory-title">
+    <div class="section-head">
+      <h2 id="memory-title">经验记忆</h2>
+      <span id="memory-note"></span>
     </div>
-
-    <div class="row">
-      <div>
-        <label for="tol">精度要求</label>
-        <input type="text" id="tol" class="mono" value="1e-3">
-      </div>
-      <div></div>
-    </div>
-    <label class="check" id="learn-row"><input type="checkbox" id="learn"> 没有合适方法时让大模型学一个新方法</label>
-
-    <div class="actions">
-      <button class="primary" id="go">求解</button>
-      <span class="status" id="status"></span>
-    </div>
-    <p class="error" id="error"></p>
+    <div class="memory" id="memory-cards"></div>
   </section>
 
-  <section class="panel" id="result-panel">
-    <h2>结果</h2>
-    <p class="status" id="empty">选一道题或自己填写，然后点“求解”。</p>
-    <div id="result" class="hidden">
-      <div><span class="badge" id="badge"></span></div>
-      <p class="summary" id="summary"></p>
-      <div class="metrics" id="metrics"></div>
-      <div class="plots" id="plots"></div>
-      <div id="learned"></div>
-      <h2 style="margin-top:16px">尝试过的方法</h2>
-      <div class="table-wrap"><table id="trials"></table></div>
+  <section class="card panel" id="methods" aria-labelledby="methods-title">
+    <div class="section-head">
+      <h2 id="methods-title">方程和方法</h2>
+      <span id="methods-note"></span>
     </div>
-  </section>
-
-  <section class="panel wide">
-    <div class="tabs">
-      <button data-tab="stats" class="active">经验记忆</button>
-      <button data-tab="methods">已知方程和方法</button>
-    </div>
-    <div id="tab-stats"><div class="table-wrap"><table id="stats"></table></div><p class="hint" id="stats-hint"></p></div>
-    <div id="tab-methods" class="hidden"><div class="table-wrap"><table id="methods"></table></div></div>
+    <div class="table-wrap"><table id="methods-table"></table></div>
   </section>
 </main>
 
@@ -188,6 +371,8 @@ code { background: var(--code); padding: 1px 4px; border-radius: 4px; font-size:
 "use strict";
 const $ = (id) => document.getElementById(id);
 const FIELDS = ["source", "exact", "initial", "boundary_value", "initial_velocity"];
+const MORE = ["initial", "boundary_value", "initial_velocity"];
+const GREEK = { alpha: "α", beta: "β", gamma: "γ", delta: "δ", kappa: "κ", lambda: "λ", mu: "μ", nu: "ν", sigma: "σ", omega: "ω", pi: "π" };
 let info = null;
 let mode = "form";
 
@@ -206,14 +391,6 @@ function el(tag, attrs = {}, ...children) {
   return node;
 }
 
-function table(node, headers, rows) {
-  node.replaceChildren(
-    el("thead", {}, el("tr", {}, ...headers.map((h) => el("th", {}, h)))),
-    el("tbody", {}, ...rows.map((r) => el("tr", {}, ...r.map((c) =>
-      typeof c === "number" ? el("td", { class: "num" }, fmt(c)) : el("td", {}, c ?? "-")))))
-  );
-}
-
 async function api(path, body) {
   const options = body === undefined ? {} : {
     method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body),
@@ -225,67 +402,111 @@ async function api(path, body) {
   return data;
 }
 
-function setupTabs() {
-  document.querySelectorAll(".tabs").forEach((bar) => {
-    const buttons = [...bar.querySelectorAll("button")];
-    buttons.forEach((b) => b.addEventListener("click", () => {
-      buttons.forEach((o) => {
-        o.classList.toggle("active", o === b);
-        $("tab-" + o.dataset.tab).classList.toggle("hidden", o !== b);
-      });
-      if (b.dataset.tab === "form" || b.dataset.tab === "text") {
-        mode = b.dataset.tab;
-        $("learn-row").classList.toggle("hidden", mode === "text");
-      }
-    }));
-  });
-}
-
-function kindHint() {
-  const eq = info.equations.find((e) => e.kind === $("kind").value);
-  if (!eq) return;
-  const defaults = Object.entries(eq.defaults).map(([k, v]) => `${k}=${v}`).join(", ");
-  $("form-hint").textContent = `${eq.form}${defaults ? "（默认 " + defaults + "）" : ""}${eq.time_order ? "，需要终止时间" : "，稳态"}`;
-}
-
-function fillForm(p) {
-  if (!info.equations.some((e) => e.kind === p.kind)) {
-    $("kind").append(el("option", { value: p.kind }, `${p.kind}（还不会）`));
+// "u_t = alpha * (u_xx + u_yy) + f" -> nodes with subscripts and Greek letters
+function formula(text) {
+  const nodes = [];
+  const re = /([A-Za-z]+)(?:_([A-Za-z]+))?(?:\^(\d+))?/g;
+  let last = 0, m;
+  const plain = (s) => s.replace(/\s*\*\s*/g, " ").replace(/-/g, "−");
+  while ((m = re.exec(text))) {
+    if (m.index > last) nodes.push(plain(text.slice(last, m.index)));
+    const word = GREEK[m[1]] || m[1];
+    nodes.push(word);
+    if (m[2]) nodes.push(el("sub", {}, m[2]));
+    if (m[3]) nodes.push(el("sup", {}, m[3]));
+    last = re.lastIndex;
   }
-  $("kind").value = p.kind;
-  $("boundary").value = p.boundary;
-  $("domain").value = p.domain.map((d) => d.join(",")).join("; ");
-  $("t_final").value = p.t_final ?? "";
-  $("coefficients").value = Object.entries(p.coefficients || {}).map(([k, v]) => `${k}=${v}`).join(", ");
-  for (const f of FIELDS) $(f).value = p[f] ?? "";
-  kindHint();
+  if (last < text.length) nodes.push(plain(text.slice(last)));
+  return nodes;
 }
 
-function readForm() {
-  const domain = $("domain").value.split(";").map((s) => s.trim()).filter(Boolean).map((part) => {
-    const ab = part.split(",").map((v) => Number(v.trim()));
+function readDomain() {
+  return $("domain").value.split(";").map((s) => s.trim()).filter(Boolean).map((part) => {
+    const ab = part.split(/[,，]/).map((v) => Number(v.trim()));
     if (ab.length !== 2 || ab.some((v) => !isFinite(v))) throw new Error(`区域写法不对：${part}（应为 a,b）`);
     return ab;
   });
-  if (!domain.length) throw new Error("请填写区域");
-  const coefficients = {};
+}
+
+function readCoefficients() {
+  const out = {};
   for (const part of $("coefficients").value.split(/[,，]/).map((s) => s.trim()).filter(Boolean)) {
     const m = part.match(/^([A-Za-z][A-Za-z0-9]*)\s*=\s*(.+)$/);
-    if (!m || !isFinite(Number(m[2]))) throw new Error(`系数写法不对：${part}（应为 名字=数值）`);
-    coefficients[m[1]] = Number(m[2]);
+    if (!m || !isFinite(Number(m[2]))) throw new Error(`系数写法不对：${part}（应为 名字 = 数值）`);
+    out[m[1]] = Number(m[2]);
   }
+  return out;
+}
+
+function updateEquation() {
+  const eq = info.equations.find((e) => e.kind === $("kind").value);
+  let dims = 1, domain = [];
+  try { domain = readDomain(); dims = Math.max(domain.length, 1); } catch { /* shown on solve */ }
+  let form = eq ? eq.form : `${$("kind").value}（还不会，求解时可以让大模型学）`;
+  if (eq && dims === 1) form = form.replace(/\((\w+_xx) \+ \w+_yy\)/, "$1").replace(/\s*\+\s*\w+_yy/, "");
+  $("formula").replaceChildren(...(eq ? formula(form) : [form]));
+  const bc = $("boundary").value === "periodic" ? "周期" : "Dirichlet";
+  $("eq-tag").textContent = `${$("kind").value} · ${["一", "二", "三"][dims - 1] || dims}维 · ${bc}`;
+  const vars = ["x", "y", "z"];
+  const parts = domain.map((d, i) => `${vars[i]} ∈ [${d[0]}, ${d[1]}]`);
+  const t = $("t_final").value.trim();
+  parts.push(t ? `算到 t = ${t}` : "稳态");
+  let coefs = {};
+  try { coefs = readCoefficients(); } catch { /* shown on solve */ }
+  const merged = { ...(eq ? eq.defaults : {}), ...coefs };
+  const cs = Object.entries(merged).map(([k, v]) => `${GREEK[k] || k} = ${v}`);
+  if (cs.length) parts.push(cs.join("，"));
+  $("where").textContent = parts.join("，");
+}
+
+function fillForm(p) {
+  if (![...$("kind").options].some((o) => o.value === p.kind)) $("kind").append(el("option", { value: p.kind }, p.kind));
+  $("kind").value = p.kind;
+  $("boundary").value = p.boundary;
+  $("domain").value = p.domain.map((d) => d.join(", ")).join("; ");
+  $("t_final").value = p.t_final ?? "";
+  $("coefficients").value = Object.entries(p.coefficients || {}).map(([k, v]) => `${k} = ${v}`).join(", ");
+  for (const f of FIELDS) $(f).value = p[f] ?? "";
+  $("more").open = MORE.some((f) => p[f]) || (p.source && p.source !== "0" && !p.exact);
+  updateEquation();
+}
+
+function readForm() {
+  const domain = readDomain();
+  if (!domain.length) throw new Error("请填写区域");
   const t = $("t_final").value.trim();
   if (t && !isFinite(Number(t))) throw new Error("终止时间必须是数字");
-  const problem = { kind: $("kind").value, boundary: $("boundary").value, domain, coefficients,
-    t_final: t ? Number(t) : null };
+  const problem = { kind: $("kind").value, boundary: $("boundary").value, domain,
+    coefficients: readCoefficients(), t_final: t ? Number(t) : null };
   for (const f of FIELDS) problem[f] = $(f).value.trim();
   const preset = info.examples.find((e) => e.name === $("preset").value);
   if (preset) { problem.name = preset.name; problem.description = preset.title; }
   return problem;
 }
 
+function setTol(value, write = true) {
+  if (write) $("tol").value = value;
+  document.querySelectorAll(".tol button").forEach((b) =>
+    b.setAttribute("aria-pressed", String(Number(b.dataset.tol) === Number(value))));
+}
+
+function setMode(next) {
+  mode = next;
+  for (const name of ["form", "text"]) {
+    $("tab-" + name).setAttribute("aria-selected", String(name === mode));
+    $("pane-" + name).classList.toggle("hidden", name !== mode);
+  }
+  $("pane-text").style.display = mode === "text" ? "flex" : "";
+  $("learn-row").classList.toggle("hidden", mode === "text");
+}
+
+function showError(message) {
+  $("error").textContent = message;
+  $("error").classList.toggle("hidden", !message);
+}
+
 async function run() {
-  $("error").textContent = "";
+  showError("");
   let path, body;
   try {
     const tol = Number($("tol").value);
@@ -296,22 +517,44 @@ async function run() {
     } else {
       path = "/api/solve"; body = { problem: readForm(), tol, learn: $("learn").checked };
     }
-  } catch (e) { $("error").textContent = e.message; return; }
-  $("go").disabled = true;
+  } catch (e) { showError(e.message); return; }
+  const go = $("go");
+  go.disabled = true;
+  go.replaceChildren(el("span", { class: "spinner", "aria-hidden": "true" }), el("span", {}, "求解中"));
   const asksModel = mode === "text" || body.learn;
-  $("status").textContent = asksModel ? `求解中，可能要请 ${info.llm.name} 帮忙，会比较久…` : "求解中…";
+  $("status").textContent = asksModel ? `可能要请 ${info.llm.name} 帮忙，会比较久…` : "";
+  $("status").classList.toggle("hidden", !asksModel);
   try {
     const report = await api(path, body);
     showReport(report);
     if (mode === "text") fillForm(report.problem);
     loadStats();
-    $("status").textContent = "";
+    loadInfo();
   } catch (e) {
-    $("status").textContent = "";
-    $("error").textContent = e.message;
+    showError(e.message);
   } finally {
-    $("go").disabled = false;
+    go.disabled = false;
+    go.replaceChildren(
+      el("span", { "aria-hidden": "true", style: "display:flex" }, playIcon()), el("span", {}, "求解"));
+    $("status").classList.add("hidden");
   }
+}
+
+function playIcon() {
+  const ns = "http://www.w3.org/2000/svg";
+  const svg = document.createElementNS(ns, "svg");
+  svg.setAttribute("width", "16"); svg.setAttribute("height", "16"); svg.setAttribute("viewBox", "0 0 16 16");
+  svg.setAttribute("fill", "none");
+  const p = document.createElementNS(ns, "path");
+  p.setAttribute("d", "M4 2.5v11l9-5.5-9-5.5z"); p.setAttribute("stroke", "currentColor");
+  p.setAttribute("stroke-width", "1.6"); p.setAttribute("stroke-linejoin", "round");
+  svg.append(p);
+  return svg;
+}
+
+function stat(k, v, sub, hero) {
+  return el("div", { class: hero ? "stat hero" : "stat" },
+    el("span", { class: "k" }, k), el("span", { class: "v" }, String(v)), el("span", { class: "sub" }, sub || ""));
 }
 
 function showReport(r) {
@@ -319,23 +562,44 @@ function showReport(r) {
   $("result").classList.remove("hidden");
   const badge = $("badge");
   badge.className = "badge " + (r.success ? "ok" : "bad");
-  badge.textContent = r.success ? "达到精度" : "没有达到精度";
-  $("summary").textContent = r.message ? `${r.summary}\n${r.message}` : r.summary;
-  const metrics = [
-    ["方法", r.method || "-"],
-    ["网格 n", r.n ?? "-"],
-    [r.error_kind === "exact" ? "误差（对精确解）" : "误差（估计）", fmt(r.error)],
-    ["精度要求", fmt(r.tol)],
-    ["求解次数", r.solver_runs ?? "-"],
-    ["用时", `${fmt(r.runtime)} 秒`],
-  ];
-  $("metrics").replaceChildren(...metrics.map(([k, v]) =>
-    el("div", { class: "metric" }, el("div", { class: "k" }, k), el("div", { class: "v" }, String(v)))));
+  badge.textContent = r.success ? "✓ 达到精度" : "没有达到精度";
+  $("result-meta").textContent = `${r.problem.name || r.problem.kind} · 用时 ${fmt(r.runtime)} 秒`;
+  const message = r.message || "";
+  $("message").textContent = message;
+  $("message").classList.toggle("hidden", !message);
+
+  let margin = "";
+  if (r.error !== null && r.error > 0) {
+    const ratio = r.tol / r.error;
+    margin = ratio >= 1 ? `要求 ${fmt(r.tol)} · 余量 ${fmt(ratio, 2)} 倍` : `要求 ${fmt(r.tol)} · 还差 ${fmt(1 / ratio, 2)} 倍`;
+  } else margin = `要求 ${fmt(r.tol)}`;
+  const spec = r.method ? info.methods.find((m) => m.name === r.method) : null;
+  $("stats").replaceChildren(
+    stat(r.error_kind === "exact" ? "误差（对比精确解）" : "误差（估计值）", fmt(r.error), margin, true),
+    stat("方法", r.method || "-", spec ? spec.description : ""),
+    stat("网格", r.n ? `n = ${r.n}` : "-", `求解 ${r.solver_runs ?? 0} 次`),
+  );
   drawSolution(r.solution);
-  table($("trials"), ["方法", "结果", "n", "误差", "工作量"],
-    r.trials.map((t) => [t.method, t.label, t.n ?? "-", t.error, t.work]));
-  $("learned").replaceChildren(...r.learned.map((o) => el("p", { class: o.success ? "status" : "error" },
-    `学习新方法：${o.success ? "成功" : "失败"}${o.solver ? "（" + o.solver + "）" : ""}，${o.rounds} 轮。${o.message || ""}`)));
+
+  const steps = r.trials.map((t, i) => {
+    const ok = t.outcome === "success";
+    return el("li", {},
+      el("span", { class: "num " + (ok ? "ok" : "bad") }, String(i + 1)),
+      el("div", { class: "step-body" },
+        el("div", { class: "step-line" },
+          el("b", {}, `${t.method}：${t.label}`),
+          el("span", { class: "mono" }, `n = ${t.n ?? "-"} · 误差 ${fmt(t.error)} · 工作量 ${fmt(t.work)}`))));
+  });
+  for (const o of r.learned) {
+    steps.push(el("li", {},
+      el("span", { class: "num " + (o.success ? "ok" : "bad") }, "★"),
+      el("div", { class: "step-body" },
+        el("div", { class: "step-line" }, el("b", {}, `学习新方法：${o.success ? "成功" : "失败"}${o.solver ? "（" + o.solver + "）" : ""}`),
+          el("span", { class: "mono" }, `${o.rounds} 轮`)),
+        el("div", { class: "step-note" }, o.message || ""))));
+  }
+  $("steps").replaceChildren(...steps);
+  $("steps-card").classList.toggle("hidden", !steps.length);
 }
 
 function drawSolution(s) {
@@ -345,18 +609,21 @@ function drawSolution(s) {
   const when = s.t !== null && s.t !== undefined ? `t = ${fmt(s.t)} 时的` : "";
   if (s.dim === 1) plots.append(lineChart(s, when));
   else if (s.dim === 2) {
-    plots.append(heatmap(s.axes, s.u, `${when}数值解 u`));
-    if (s.exact) plots.append(heatmap(s.axes, s.u.map((row, i) => row.map((v, j) => Math.abs(v - s.exact[i][j]))), "误差 |u − 精确解|"));
-  } else plots.append(el("p", { class: "status" }, "三维结果不画图。"));
+    const grid = el("div", { class: "plots" }, heatmap(s.axes, s.u, `${when}数值解 u(x, y)`));
+    if (s.exact) grid.append(heatmap(s.axes, s.u.map((row, i) => row.map((v, j) => Math.abs(v - s.exact[i][j]))), "误差 |u − 精确解|"));
+    plots.append(grid);
+  } else plots.append(el("p", { class: "message" }, "三维结果不画图。"));
 }
 
 function lineChart(s, when) {
-  const W = 640, H = 300, L = 52, R = 12, T = 12, B = 30;
+  // size the chart to its box so the axis labels stay readable on a phone
+  const W = Math.round(Math.min(900, Math.max(320, $("plots").clientWidth || 720)));
+  const H = W < 560 ? 240 : 300, L = 56, R = 16, T = 16, B = 34;
   const xs = s.axes[0];
   const ys = s.u.concat(s.exact || []);
   let lo = Math.min(...ys), hi = Math.max(...ys);
   if (hi - lo < 1e-12) { lo -= 1; hi += 1; }
-  const pad = (hi - lo) * 0.06; lo -= pad; hi += pad;
+  const pad = (hi - lo) * 0.08; lo -= pad; hi += pad;
   const x0 = xs[0], x1 = xs[xs.length - 1];
   const px = (x) => L + (x - x0) / (x1 - x0) * (W - L - R);
   const py = (y) => T + (hi - y) / (hi - lo) * (H - T - B);
@@ -364,6 +631,8 @@ function lineChart(s, when) {
   const svg = document.createElementNS(ns, "svg");
   svg.setAttribute("viewBox", `0 0 ${W} ${H}`);
   svg.setAttribute("class", "chart");
+  svg.setAttribute("role", "img");
+  svg.setAttribute("aria-label", `${when}u(x) 的曲线，取值从 ${fmt(Math.min(...s.u))} 到 ${fmt(Math.max(...s.u))}`);
   const add = (tag, attrs, text) => {
     const n = document.createElementNS(ns, tag);
     for (const [k, v] of Object.entries(attrs)) n.setAttribute(k, v);
@@ -372,21 +641,23 @@ function lineChart(s, when) {
   };
   for (let i = 0; i <= 4; i++) {
     const y = lo + (hi - lo) * i / 4;
-    add("line", { x1: L, x2: W - R, y1: py(y), y2: py(y), style: "stroke:var(--border)" });
-    add("text", { x: L - 6, y: py(y) + 4, "text-anchor": "end" }, fmt(y));
+    add("line", { class: "grid", x1: L, x2: W - R, y1: py(y), y2: py(y) });
+    add("text", { x: L - 8, y: py(y) + 4, "text-anchor": "end" }, fmt(y));
     const x = x0 + (x1 - x0) * i / 4;
     add("text", { x: px(x), y: H - 10, "text-anchor": "middle" }, fmt(x));
   }
   const path = (vals) => vals.map((v, i) => `${i ? "L" : "M"}${px(xs[i]).toFixed(1)},${py(v).toFixed(1)}`).join("");
-  add("path", { d: path(s.u), fill: "none", style: "stroke:var(--accent)", "stroke-width": 2.5 });
-  if (s.exact) add("path", { d: path(s.exact), fill: "none", style: "stroke:var(--exact)", "stroke-width": 1.5, "stroke-dasharray": "6 5" });
+  const base = Math.min(Math.max(0, lo), hi);
+  add("path", { class: "area", d: `${path(s.u)}L${px(x1).toFixed(1)},${py(base).toFixed(1)}L${px(x0).toFixed(1)},${py(base).toFixed(1)}Z` });
+  add("path", { class: "u", d: path(s.u), fill: "none", "stroke-width": 3, "stroke-linecap": "round", "stroke-linejoin": "round" });
+  if (s.exact) add("path", { class: "exact", d: path(s.exact), fill: "none", "stroke-width": 1.6, "stroke-dasharray": "6 6" });
   const legend = el("div", { class: "legend" },
-    el("span", {}, el("i", { style: "background:var(--accent)" }), "数值解"),
-    ...(s.exact ? [el("span", {}, el("i", { style: "background:var(--exact)" }), "精确解")] : []));
-  return el("figure", { class: "wide" }, el("figcaption", {}, `${when}u(x)`), svg, legend);
+    el("span", {}, el("i", { class: "swatch" }), "数值解"),
+    ...(s.exact ? [el("span", {}, el("i", { class: "swatch dash" }), "精确解")] : []));
+  return el("figure", {}, el("div", { class: "fig-head" }, el("figcaption", {}, `${when}u(x)`), legend), svg);
 }
 
-// Turbo colour map, sampled at nine stops (matches the CSS scale bar)
+// Turbo colour map, sampled at nine stops (matches the CSS ramp)
 const TURBO = [[48,18,59],[70,98,215],[54,170,249],[26,228,182],[114,254,94],[199,239,52],[250,186,57],[246,107,25],[202,42,4]];
 function colour(f) {
   const p = Math.min(Math.max(f, 0), 1) * (TURBO.length - 1);
@@ -397,9 +668,9 @@ function colour(f) {
 function heatmap(axes, grid, caption) {
   const nx = axes[0].length, ny = axes[1].length;
   const flat = grid.flat();
-  let lo = Math.min(...flat), hi = Math.max(...flat);
+  const lo = Math.min(...flat), hi = Math.max(...flat);
   const span = hi - lo || 1;
-  const canvas = el("canvas");
+  const canvas = el("canvas", { role: "img", "aria-label": `${caption}，取值从 ${fmt(lo)} 到 ${fmt(hi)}` });
   canvas.width = nx; canvas.height = ny;
   const ctx = canvas.getContext("2d");
   const img = ctx.createImageData(nx, ny);
@@ -411,42 +682,84 @@ function heatmap(axes, grid, caption) {
   ctx.putImageData(img, 0, 0);
   const ratio = (axes[1][ny - 1] - axes[1][0]) / (axes[0][nx - 1] - axes[0][0]);
   canvas.style.aspectRatio = `${1 / ratio}`;
-  const scale = el("div", { class: "scale" }, el("span", {}, fmt(lo)), el("span", { class: "bar" }), el("span", {}, fmt(hi)));
+  const scale = el("div", { class: "scale" }, el("span", {}, fmt(lo)), el("span", { class: "ramp" }), el("span", {}, fmt(hi)));
   return el("figure", {}, el("figcaption", {}, caption), canvas, scale);
 }
 
 async function loadStats() {
   try {
     const data = await api("/api/stats");
-    table($("stats"), ["问题类别", "方法", "尝试", "成功", "平均工作量"],
-      data.rows.map((r) => [r.signature, r.method, String(r.tries), String(r.successes), r.mean_work]));
-    $("stats-hint").textContent = data.rows.length ? `共 ${data.episodes} 次求解记录。agent 用这些记录挑方法、猜网格大小。`
-      : "还没有经验记录，解几道题就会有了。";
-  } catch (e) { $("stats-hint").textContent = e.message; }
+    const groups = new Map();
+    for (const r of data.rows) {
+      if (!groups.has(r.signature)) groups.set(r.signature, []);
+      groups.get(r.signature).push(r);
+    }
+    const cards = [...groups].map(([sig, rows]) => {
+      const tries = rows.reduce((a, r) => a + r.tries, 0);
+      const wins = rows.reduce((a, r) => a + r.successes, 0);
+      rows.sort((a, b) => (b.successes / b.tries) - (a.successes / a.tries) || (a.mean_work ?? Infinity) - (b.mean_work ?? Infinity));
+      return el("div", { class: "mem" },
+        el("div", { class: "top" }, el("span", { class: "sig" }, sig),
+          el("span", { class: "rate" + (wins < tries / 2 ? " low" : "") }, `成功 ${wins}/${tries}`)),
+        ...rows.map((r, i) => el("div", { class: "method" },
+          el("div", { class: "method-line" },
+            el("span", {}, i === 0 ? "首选 " : "", el("span", { class: "mono" }, r.method)),
+            el("span", { class: "mono" }, `${r.successes}/${r.tries} · ${fmt(r.mean_work)}`)),
+          el("div", { class: "meter" }, el("i", { style: `width:${Math.round(100 * r.successes / r.tries)}%` })))));
+    });
+    $("memory-cards").replaceChildren(...cards);
+    $("memory-note").textContent = data.rows.length
+      ? `共 ${data.episodes} 次求解记录 · agent 靠这些挑方法、猜网格大小` : "还没有记录，解几道题就会有了";
+  } catch (e) { $("memory-note").textContent = e.message; }
 }
 
 function showMethods() {
-  table($("methods"), ["方法", "方程", "阶", "维数", "边界", "来源", "说明"],
-    info.methods.map((m) => [m.name, m.kind, String(m.order), m.dims.join("/"), m.boundaries.join("/"),
-      m.origin === "builtin" ? "内置" : "学会", m.description]));
+  const rows = info.methods.map((m) => el("tr", {},
+    el("td", { class: "mono" }, m.name), el("td", {}, m.kind), el("td", { class: "mono" }, `${m.order} 阶`),
+    el("td", {}, m.dims.map((d) => `${d}D`).join(" / ")), el("td", {}, m.boundaries.join(" / ")),
+    el("td", {}, el("span", { class: m.origin === "builtin" ? "origin" : "origin learned" }, m.origin === "builtin" ? "内置" : "学会")),
+    el("td", { class: "desc" }, m.description)));
+  $("methods-table").replaceChildren(
+    el("thead", {}, el("tr", {}, ...["方法", "方程", "精度", "维数", "边界", "来源", "说明"].map((h) => el("th", {}, h)))),
+    el("tbody", {}, ...rows));
+  const learned = info.methods.filter((m) => m.origin !== "builtin").length;
+  $("methods-note").textContent = `${info.equations.length} 种方程 · ${info.methods.length} 个方法${learned ? `，其中 ${learned} 个是学会的` : ""}`;
+}
+
+async function loadInfo() {
+  info = await api("/api/info");
+  $("version").textContent = "v" + info.version;
+  $("home").textContent = info.home;
+  $("llm-dot").classList.toggle("ready", info.llm.ready);
+  $("llm-text").textContent = info.llm.ready ? `大模型：${info.llm.name}` : `大模型：${info.llm.name}（未设置 ${info.llm.key}）`;
+  $("llm-hint").textContent = info.llm.ready
+    ? `会请 ${info.llm.name} 把描述变成题目，再交给 agent 求解。`
+    : `需要先设置 ${info.llm.key}，再重新运行 pde-agent app。`;
+  showMethods();
+}
+
+function setupNav() {
+  const links = [...document.querySelectorAll(".nav a")];
+  links.forEach((a) => a.addEventListener("click", () => links.forEach((o) => o.classList.toggle("current", o === a))));
 }
 
 async function init() {
-  setupTabs();
-  try { info = await api("/api/info"); } catch (e) { $("meta").textContent = e.message; return; }
-  $("meta").textContent = `v${info.version} · 大模型：${info.llm.name}（${info.llm.key}）· 数据目录 ${info.home}`;
-  $("llm-hint").textContent = `会请 ${info.llm.name} 把描述变成题目，需要设置 ${info.llm.key}。`;
+  setupNav();
+  try { await loadInfo(); } catch (e) { $("llm-text").textContent = e.message; return; }
   for (const eq of info.equations) $("kind").append(el("option", { value: eq.kind }, eq.kind));
   for (const ex of info.examples) $("preset").append(el("option", { value: ex.name }, `第 ${ex.level} 级 · ${ex.title}`));
   $("preset").addEventListener("change", () => {
     const ex = info.examples.find((e) => e.name === $("preset").value);
-    if (ex) { fillForm(ex.problem); $("tol").value = ex.tol; }
+    if (ex) { fillForm(ex.problem); setTol(ex.tol); }
   });
-  $("kind").addEventListener("change", kindHint);
+  for (const id of ["kind", "boundary", "domain", "t_final", "coefficients"]) $(id).addEventListener("input", updateEquation);
+  document.querySelectorAll(".tol button").forEach((b) => b.addEventListener("click", () => setTol(b.dataset.tol)));
+  $("tol").addEventListener("input", () => setTol($("tol").value, false));
+  $("tab-form").addEventListener("click", () => setMode("form"));
+  $("tab-text").addEventListener("click", () => setMode("text"));
   $("go").addEventListener("click", run);
   if (info.examples.length) { $("preset").value = info.examples[0].name; $("preset").dispatchEvent(new Event("change")); }
-  else kindHint();
-  showMethods();
+  else updateEquation();
   loadStats();
 }
 init();

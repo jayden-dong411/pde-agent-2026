@@ -30,7 +30,7 @@ DEFAULT_MODEL = "claude-opus-5-5"
 # on a fallback model within the same call.
 FALLBACK_BETA = "server-side-fallback-2026-07-01"
 
-DEEPSEEK_MODEL = "deepseek-v4-pro"
+DEEPSEEK_MODEL = "deepseek-flash"
 DEEPSEEK_BASE_URL = "https://api.deepseek.com"
 # DeepSeek's thinking effort has the levels low, high and max
 _DEEPSEEK_EFFORT = {"low": "low", "medium": "high", "high": "high", "max": "max"}

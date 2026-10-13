@@ -136,7 +136,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--home", help="经验和技能的存放目录（默认 ~/.pde_agent 或 $PDE_AGENT_HOME）")
     parser.add_argument("--llm", choices=sorted(PROVIDERS),
                         help="用哪个大模型（默认：只设置了 DEEPSEEK_API_KEY 时用 deepseek，否则用 claude）")
-    parser.add_argument("--model", help="模型名（默认 Claude 用 claude-opus-5-5，DeepSeek 用 deepseek-v4-pro）")
+    parser.add_argument("--model", help="模型名（默认 Claude 用 claude-opus-5-5，DeepSeek 用 deepseek-flash）")
     parser.add_argument("--no-explore", action="store_true", help="只用已知最好的方法，不尝试新方法")
     sub = parser.add_subparsers(dest="command", required=True)
 

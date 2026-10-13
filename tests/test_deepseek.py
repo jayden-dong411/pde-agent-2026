@@ -137,8 +137,9 @@ def test_provider_choice(monkeypatch):
         make_brain("gpt")
     pytest.importorskip("openai")
     monkeypatch.setenv("DEEPSEEK_API_KEY", "test-key")
-    brain = make_brain("deepseek", "deepseek-flash")
-    assert isinstance(brain, DeepSeekBrain) and brain.model == "deepseek-flash"
+    assert DEEPSEEK_MODEL == "deepseek-flash" and make_brain("deepseek").model == "deepseek-flash"
+    brain = make_brain("deepseek", "deepseek-v4-pro")
+    assert isinstance(brain, DeepSeekBrain) and brain.model == "deepseek-v4-pro"
     assert str(brain.client.base_url).rstrip("/") == "https://api.deepseek.com"
     # brotli is never asked for: an old brotli package breaks httpx2's decoder
     assert "br" not in brain.client.default_headers["Accept-Encoding"]

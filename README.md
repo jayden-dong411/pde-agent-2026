@@ -113,7 +113,7 @@ src/pde_agent/
 ```bash
 export DEEPSEEK_API_KEY=...   # 在 https://platform.deepseek.com/api_keys 创建
 pde-agent --llm deepseek ask "在 [0,1] 上解 u_t = 0.01 u_xx，初值 sin(pi x)，两端为 0，算到 t = 1"
-pde-agent --llm deepseek --model deepseek-flash curriculum --frontier --learn
+pde-agent --llm deepseek --model deepseek-v4-pro curriculum --frontier --learn   # 换成更强的 pro 模型
 ```
 
 不写 `--llm` 时，只设置了 `DEEPSEEK_API_KEY` 就用 DeepSeek，否则用 Claude。
@@ -122,7 +122,7 @@ pde-agent --llm deepseek --model deepseek-flash curriculum --frontier --learn
 | --- | --- | --- |
 | 安装 | `pip install -e ".[llm]"` | `pip install -e ".[deepseek]"` |
 | API key（环境变量） | `ANTHROPIC_API_KEY` | `DEEPSEEK_API_KEY` |
-| 默认模型 | `claude-opus-5-5` | `deepseek-v4-pro`，更快更便宜可以用 `deepseek-flash` |
+| 默认模型 | `claude-opus-5-5` | `deepseek-flash`，需要更强的可以用 `--model deepseek-v4-pro` |
 | 回复格式 | 结构化输出，JSON 一定符合格式 | JSON 输出模式，本地再按格式检查，不合格就让它重写，最多 3 次 |
 | 其他 | 开启服务端 fallback：模型拒绝请求时，API 在同一次调用里换模型重试（不需要可以在 `llm.py` 里去掉） | 开启思考模式 |
 

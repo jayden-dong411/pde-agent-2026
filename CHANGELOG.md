@@ -2,6 +2,14 @@
 
 每个版本都发布在 [GitHub Releases](https://github.com/jayden-dong411/pde-agent-2026/releases)，发布说明就是下面对应版本的内容。
 
+## v0.4.1 — 2026-10-13
+
+修复：用 DeepSeek 时报错 `TypeError: process() takes no keyword arguments`。
+
+### 修复
+
+- 有的电脑上装的 `brotli` 压缩库版本比较旧（比如 Anaconda 自带的），而 DeepSeek 的回复用 brotli 压缩时，新版 OpenAI SDK 解压要用 `brotli` 1.2 以上的功能，于是每次调用 DeepSeek 都失败，“用一句话描述”和“学一个新方法”都用不了。现在请求 DeepSeek 时只接受 gzip 压缩，不再依赖 `brotli` 的版本。
+
 ## v0.4.0 — 2026-10-13
 
 网页版换了新界面：更清楚地看到题目、误差和 agent 的求解过程。

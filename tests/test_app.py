@@ -1,6 +1,7 @@
 """The local web app, exercised over real HTTP on a free port."""
 
 import json
+import math
 import os
 import stat
 import threading
@@ -245,3 +246,23 @@ def test_cli_uses_saved_settings(tmp_path, monkeypatch):
     assert main(["--home", str(tmp_path), "ask", "求解热方程"]) == 2
     assert main(["--home", str(tmp_path), "--llm", "deepseek", "ask", "求解热方程"]) == 2
     assert seen == [("claude", "claude-haiku-5-5", "sk-ant-saved-0000"), ("deepseek", None, None)]
+
+
+def test_preview_draws_the_given_functions(serve):
+    base = serve()
+    heat = {"kind": "heat", "domain": [[0, 1]], "t_final": 0.5, "coefficients": {"alpha": 0.1},
+            "exact": "sin(pi*x)*exp(-0.1*pi**2*t)"}
+    status, data = call(base + "/api/preview", {"problem": heat})
+    assert status == 200 and data["dim"] == 1 and len(data["axes"][0]) == 129
+    exact, initial = data["curves"]
+    assert exact["field"] == "exact" and exact["t"] == 0.5 and initial["field"] == "initial"
+    assert max(initial["values"]) == pytest.approx(1.0, abs=1e-3)
+    assert max(exact["values"]) == pytest.approx(math.exp(-0.05 * math.pi ** 2), abs=1e-3)
+
+    square = {"kind": "poisson", "domain": [[0, 1], [0, 2]], "source": "1"}
+    status, data = call(base + "/api/preview", {"problem": square})
+    assert status == 200 and data["dim"] == 2 and [c["field"] for c in data["curves"]] == ["source"]
+    assert len(data["curves"][0]["values"]) == 65 and len(data["curves"][0]["values"][0]) == 65
+
+    status, data = call(base + "/api/preview", {"problem": {"kind": "poisson", "domain": [[0, 1]], "exact": "sin(pi*"}})
+    assert status == 400 and "题目有误" in data["error"]

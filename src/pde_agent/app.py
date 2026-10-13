@@ -106,6 +106,35 @@ def problem_from_form(payload: dict) -> PDEProblem:
         raise RequestError(f"题目有误：{exc}") from exc
 
 
+PREVIEW_POINTS = (129, 65)  # per axis for 1-D and 2-D previews
+
+
+def preview_json(problem: PDEProblem) -> dict:
+    """The known fields of a problem on a grid, drawn before solving."""
+    dim = len(problem.domain)
+    data: dict[str, Any] = {"dim": dim, "axes": [], "curves": []}
+    if dim > 2:
+        return data
+    axes = [np.linspace(a, b, PREVIEW_POINTS[dim - 1]) for a, b in problem.domain]
+    points = tuple(np.meshgrid(*axes, indexing="ij"))
+    t_final = problem.t_final or 0.0
+    wanted = [("exact", t_final, f"精确解 t = {t_final:g}" if problem.t_final else "精确解")] if problem.has_exact() else []
+    if problem.t_final:
+        wanted.append(("initial", 0.0, "初值 t = 0"))
+    if not wanted:
+        wanted.append(("source", 0.0, "源项 f"))
+    for name, t, label in wanted:
+        try:
+            values = np.asarray(problem.fn(name)(*(points if dim == 2 else (points[0], 0.0)), t), dtype=float)
+        except (ValueError, TypeError, ArithmeticError):
+            continue
+        if not np.all(np.isfinite(values)):
+            continue
+        data["curves"].append({"field": name, "label": label, "t": t, "values": values.tolist()})
+    data["axes"] = [axis.tolist() for axis in axes]
+    return data
+
+
 class AppState:
     """The agent behind the page; solves run one at a time."""
 
@@ -215,6 +244,9 @@ class AppState:
             report = self.agent.solve(problem, tol, learn=learn)
         return report_json(report)
 
+    def preview(self, payload: dict) -> dict:
+        return preview_json(problem_from_form(payload))
+
     def ask(self, payload: dict) -> dict:
         text = str(payload.get("text") or "").strip()
         if not text:
@@ -307,7 +339,8 @@ def make_handler(state: AppState):
         def do_POST(self):
             if not self._local_host():
                 return
-            routes = {"/api/solve": state.solve, "/api/ask": state.ask, "/api/settings": state.save_settings}
+            routes = {"/api/solve": state.solve, "/api/ask": state.ask, "/api/settings": state.save_settings,
+                      "/api/preview": state.preview}
             route = routes.get(self.path)
             if route is None:
                 self._json(HTTPStatus.NOT_FOUND, {"error": "not found"})

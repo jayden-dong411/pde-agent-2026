@@ -2,6 +2,14 @@
 
 每个版本都发布在 [GitHub Releases](https://github.com/jayden-dong411/pde-agent-2026/releases)，发布说明就是下面对应版本的内容。
 
+## v0.4.2 — 2026-10-13
+
+DeepSeek 的默认模型换成 deepseek-flash。
+
+### 改动
+
+- **DeepSeek 默认模型改成 `deepseek-flash`**：更快也更便宜。需要更强的模型时用 `--model deepseek-v4-pro`，比如 `pde-agent --llm deepseek --model deepseek-v4-pro app`。Claude 的默认模型不变。
+
 ## v0.4.1 — 2026-10-13
 
 修复：用 DeepSeek 时报错 `TypeError: process() takes no keyword arguments`。

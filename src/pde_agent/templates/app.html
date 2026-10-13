@@ -100,24 +100,39 @@ h3 { margin: 0; font-size: 15px; font-weight: 600; }
 .segmented { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 4px; padding: 4px; background: var(--track); border-radius: 10px; }
 .segmented button { height: 40px; border: 0; border-radius: 8px; background: transparent; color: var(--muted); cursor: pointer; }
 .segmented button[aria-selected="true"] { background: var(--surface); color: var(--ink); font-weight: 500; box-shadow: 0 1px 2px rgba(20, 33, 43, .14); }
-.composer-body { padding: 18px 22px 22px; display: flex; flex-direction: column; gap: 16px; }
+.composer-body { padding: 16px 22px 22px; display: flex; flex-direction: column; gap: 14px; }
 .field { display: flex; flex-direction: column; gap: 6px; min-width: 0; }
 .field > label, .label { font-size: 12px; font-weight: 500; color: var(--muted); }
 .field > label span { font-weight: 400; }
 .pair { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
 input[type=text], select, textarea { width: 100%; min-width: 0; border: 1px solid var(--field-line); border-radius: 9px; background: var(--surface); color: var(--ink); }
-input[type=text], select { height: 44px; padding: 0 12px; }
+input[type=text], select { height: 40px; padding: 0 12px; }
 input[type=text] { font-family: var(--mono); font-size: 13px; }
 textarea { min-height: 140px; padding: 10px 12px; resize: vertical; line-height: 1.6; }
 input:focus, select:focus, textarea:focus { outline: none; border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft); }
-.equation { background: var(--soft); border: 1px solid var(--soft-line); border-radius: 10px; padding: 14px 16px; display: flex; flex-direction: column; gap: 6px; }
-.equation .top { display: flex; justify-content: space-between; align-items: center; gap: 8px; flex-wrap: wrap; }
 .tag { font-family: var(--mono); font-size: 12px; color: var(--accent-ink); background: var(--accent-soft); padding: 1px 8px; border-radius: 999px; }
 .formula { font-family: var(--math); font-style: italic; font-size: 23px; line-height: 1.35; overflow-wrap: anywhere; }
 .formula sub { font-size: 60%; }
 .formula sup { font-size: 60%; }
-.equation .where { font-size: 12px; color: var(--muted); overflow-wrap: anywhere; }
-.row-select { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 12px; }
+.where { font-size: 12px; color: var(--muted); overflow-wrap: anywhere; }
+.quad { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
+
+/* problem preview (right column) */
+.preview-body { display: flex; flex-wrap: wrap; gap: 20px 28px; align-items: center; }
+.preview-eq { flex: 1 1 260px; min-width: 0; display: flex; flex-direction: column; gap: 12px; }
+.preview-eq .top { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.preview-eq .formula { font-size: 32px; }
+.preview-plot { flex: 1.3 1 320px; min-width: 0; }
+.preview-plot figure.map { max-width: 300px; margin: 0 auto; }
+.preview-plot .message { padding: 24px 0; text-align: center; }
+.conds { display: grid; grid-template-columns: auto minmax(0, 1fr); gap: 6px 14px; margin: 0; font-size: 13px; padding-top: 12px; border-top: 1px solid var(--track); }
+.conds dt { color: var(--muted); }
+.conds dd { margin: 0; font-family: var(--mono); overflow-wrap: anywhere; }
+.conds dd.derived { font-family: var(--sans); color: var(--muted); }
+.ideas { display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: 10px; }
+.ideas button { text-align: left; padding: 12px 14px; border: 1px solid var(--soft-line); border-radius: 10px; background: var(--soft); cursor: pointer; line-height: 1.6; }
+.ideas button:hover { border-color: var(--accent); background: var(--accent-soft); }
+.empty.compact { padding: 20px 16px; flex-direction: row; justify-content: center; text-align: left; gap: 14px; }
 details.more { border-top: 1px solid var(--soft-line); padding-top: 10px; }
 details.more summary { cursor: pointer; font-size: 13px; font-weight: 500; color: var(--accent-ink); min-height: 32px; display: flex; align-items: center; gap: 6px; list-style: none; }
 details.more summary::-webkit-details-marker { display: none; }
@@ -175,7 +190,7 @@ svg.chart .exact { stroke: var(--exact); }
 canvas { width: 100%; height: auto; image-rendering: pixelated; border-radius: 8px; display: block; }
 .scale { display: flex; align-items: center; gap: 8px; font: 11px var(--mono); color: var(--muted); }
 .scale .ramp { flex: 1; height: 8px; border-radius: 4px; background: linear-gradient(90deg, #30123b, #4662d7, #36aaf9, #1ae4b6, #72fe5e, #c7ef34, #faba39, #f66b19, #ca2a04); }
-.empty { padding: 48px 24px; display: flex; flex-direction: column; align-items: center; gap: 10px; text-align: center; color: var(--muted); }
+.empty { padding: 32px 24px; display: flex; flex-direction: column; align-items: center; gap: 10px; text-align: center; color: var(--muted); }
 .empty b { color: var(--ink); font-size: 15px; font-weight: 600; }
 .steps { margin: 0; padding: 0; list-style: none; }
 .steps li { display: flex; gap: 14px; align-items: flex-start; padding: 10px 0; border-bottom: 1px solid var(--track); }
@@ -291,16 +306,7 @@ th { color: var(--muted); font-weight: 500; font-size: 12px; }
             <select id="preset"><option value="">（自己填写）</option></select>
           </div>
 
-          <div class="equation" aria-live="polite">
-            <div class="top">
-              <span class="label">方程</span>
-              <span class="tag" id="eq-tag"></span>
-            </div>
-            <div class="formula" id="formula"></div>
-            <div class="where" id="where"></div>
-          </div>
-
-          <div class="row-select">
+          <div class="quad">
             <div class="field">
               <label for="kind">方程类型</label>
               <select id="kind"></select>
@@ -312,9 +318,6 @@ th { color: var(--muted); font-weight: 500; font-size: 12px; }
                 <option value="periodic">周期</option>
               </select>
             </div>
-          </div>
-
-          <div class="pair">
             <div class="field">
               <label for="domain">区域 <span>· 每维 a,b，用 ; 分隔</span></label>
               <input type="text" id="domain" value="0, 1">
@@ -325,14 +328,15 @@ th { color: var(--muted); font-weight: 500; font-size: 12px; }
             </div>
           </div>
 
-          <div class="field">
-            <label for="coefficients">系数 <span>· 如 alpha = 0.1, c = 1</span></label>
-            <input type="text" id="coefficients">
-          </div>
-
-          <div class="field">
-            <label for="exact">精确解 <span>· 有了就直接算误差</span></label>
-            <input type="text" id="exact">
+          <div class="pair">
+            <div class="field">
+              <label for="coefficients">系数 <span>· 如 c = 1</span></label>
+              <input type="text" id="coefficients">
+            </div>
+            <div class="field">
+              <label for="exact">精确解 <span>· 可选</span></label>
+              <input type="text" id="exact">
+            </div>
           </div>
 
           <details class="more" id="more">
@@ -394,16 +398,36 @@ th { color: var(--muted); font-weight: 500; font-size: 12px; }
     </section>
 
     <section class="results" aria-labelledby="result-title">
+      <div class="card panel" id="preview-card" aria-live="polite">
+        <div class="preview-body">
+          <div class="preview-eq">
+            <div class="top">
+              <h2>方程</h2>
+              <span class="tag" id="eq-tag"></span>
+            </div>
+            <div class="formula" id="formula"></div>
+            <div class="where" id="where"></div>
+            <dl class="conds" id="conds"></dl>
+          </div>
+          <div class="preview-plot" id="preview-plot"></div>
+        </div>
+      </div>
+
+      <div class="card panel hidden" id="ideas-card">
+        <h2>可以这样描述</h2>
+        <p class="hint">点一条填进左边，再点“求解”。大模型会把它变成题目，这里会显示它理解的方程。</p>
+        <div class="ideas" id="ideas"></div>
+      </div>
+
       <div class="card panel">
         <div class="result-head">
           <h2 id="result-title">结果</h2>
           <span class="badge hidden" id="badge"></span>
           <span class="result-meta" id="result-meta"></span>
         </div>
-        <div class="empty" id="empty">
-          <svg width="44" height="44" viewBox="0 0 44 44" fill="none" aria-hidden="true"><rect x="3" y="3" width="38" height="38" rx="10" stroke="currentColor" stroke-width="1.5"/><path d="M10 28 C16 10, 21 10, 22 22 S29 34, 34 15" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg>
-          <b>还没有结果</b>
-          <span>在左边选一道课程题或自己填写，点“求解”。</span>
+        <div class="empty compact" id="empty">
+          <svg width="36" height="36" viewBox="0 0 44 44" fill="none" aria-hidden="true"><rect x="3" y="3" width="38" height="38" rx="10" stroke="currentColor" stroke-width="1.5"/><path d="M10 28 C16 10, 21 10, 22 22 S29 34, 34 15" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg>
+          <span><b>还没有结果</b><br>点左边的“求解”，这里会显示数值解、误差和 agent 试过的方法。</span>
         </div>
         <div id="result" class="hidden" style="display: flex; flex-direction: column; gap: 18px">
           <p class="message hidden" id="message"></p>
@@ -444,6 +468,7 @@ const MORE = ["initial", "boundary_value", "initial_velocity"];
 const GREEK = { alpha: "α", beta: "β", gamma: "γ", delta: "δ", kappa: "κ", lambda: "λ", mu: "μ", nu: "ν", sigma: "σ", omega: "ω", pi: "π" };
 let info = null;
 let mode = "form";
+let asked = false;
 
 function fmt(v, digits = 3) {
   if (v === null || v === undefined || !isFinite(v)) return "-";
@@ -526,6 +551,48 @@ function updateEquation() {
   const cs = Object.entries(merged).map(([k, v]) => `${GREEK[k] || k} = ${v}`);
   if (cs.length) parts.push(cs.join("，"));
   $("where").textContent = parts.join("，");
+  showConditions(t !== "");
+  schedulePreview();
+}
+
+function showConditions(timeDependent) {
+  const exact = $("exact").value.trim();
+  const rows = [["源项 f", $("source").value.trim() || "0"]];
+  if (timeDependent) rows.push(["初值", $("initial").value.trim() || (exact ? null : "（没填）")]);
+  if ($("boundary").value !== "periodic") rows.push(["边界值", $("boundary_value").value.trim() || (exact ? null : "0")]);
+  if ($("kind").value === "wave") rows.push(["初速度", $("initial_velocity").value.trim() || (exact ? null : "0")]);
+  rows.push(["精确解", exact || "（没有，用 Richardson 估计误差）"]);
+  $("conds").replaceChildren(...rows.flatMap(([k, v]) => [
+    el("dt", {}, k), el("dd", v === null ? { class: "derived" } : {}, v === null ? "由精确解推出" : v)]));
+}
+
+let previewTimer = 0, previewSeq = 0;
+function schedulePreview() {
+  clearTimeout(previewTimer);
+  previewTimer = setTimeout(loadPreview, 250);
+}
+
+async function loadPreview() {
+  const seq = ++previewSeq;
+  const box = $("preview-plot");
+  let data;
+  try {
+    data = await api("/api/preview", { problem: readForm() });
+  } catch (e) {
+    if (seq === previewSeq) box.replaceChildren(el("p", { class: "message" }, `题目还没填好：${e.message.replace(/^题目有误：/, "")}`));
+    return;
+  }
+  if (seq !== previewSeq) return;
+  const curves = data.curves;
+  if (!curves.length) {
+    box.replaceChildren(el("p", { class: "message" }, data.dim > 2 ? "三维题目不画预览图。" : "没有可以预先画出来的函数。"));
+  } else if (data.dim === 1) {
+    box.replaceChildren(lineChart(data.axes[0], curves.map((c) => ({ name: c.label, values: c.values })), "题目给的函数", box));
+  } else {
+    const fig = heatmap(data.axes, curves[0].values, curves[0].label + " u(x, y)");
+    fig.classList.add("map");
+    box.replaceChildren(fig);
+  }
 }
 
 function fillForm(p) {
@@ -567,7 +634,17 @@ function setMode(next) {
   }
   $("pane-text").style.display = mode === "text" ? "flex" : "";
   $("learn-row").classList.toggle("hidden", mode === "text");
+  // in text mode the form is stale until the model has read the description
+  $("preview-card").classList.toggle("hidden", mode === "text" && !asked);
+  $("ideas-card").classList.toggle("hidden", mode !== "text" || asked);
 }
+
+const IDEAS = [
+  "一根长 1 的杆，两端温度保持 0，初始温度 sin(pi x)，热扩散系数 0.1，求 t = 0.5 时的温度分布。",
+  "在单位正方形上解泊松方程 -Δu = 2π² sin(πx) sin(πy)，边界上 u = 0。",
+  "周期区间 [0, 1] 上的波以速度 1 向右传播，初始形状 sin(2πx)，算到 t = 1。",
+  "两端固定的弦，初始位移 sin(πx)，初速度 0，波速 1，求 t = 0.5 时的形状。",
+];
 
 function showError(message) {
   $("error").textContent = message;
@@ -596,7 +673,7 @@ async function run() {
   try {
     const report = await api(path, body);
     showReport(report);
-    if (mode === "text") fillForm(report.problem);
+    if (mode === "text") { fillForm(report.problem); asked = true; setMode("text"); }
     loadStats();
     loadInfo();
   } catch (e) {
@@ -676,7 +753,10 @@ function drawSolution(s) {
   plots.replaceChildren();
   if (!s) return;
   const when = s.t !== null && s.t !== undefined ? `t = ${fmt(s.t)} 时的` : "";
-  if (s.dim === 1) plots.append(lineChart(s, when));
+  if (s.dim === 1) {
+    const series = [{ name: "数值解", values: s.u }, ...(s.exact ? [{ name: "精确解", values: s.exact }] : [])];
+    plots.append(lineChart(s.axes[0], series, `${when}u(x)`, plots));
+  }
   else if (s.dim === 2) {
     const grid = el("div", { class: "plots" }, heatmap(s.axes, s.u, `${when}数值解 u(x, y)`));
     if (s.exact) grid.append(heatmap(s.axes, s.u.map((row, i) => row.map((v, j) => Math.abs(v - s.exact[i][j]))), "误差 |u − 精确解|"));
@@ -684,12 +764,12 @@ function drawSolution(s) {
   } else plots.append(el("p", { class: "message" }, "三维结果不画图。"));
 }
 
-function lineChart(s, when) {
+function lineChart(xs, series, caption, box) {
   // size the chart to its box so the axis labels stay readable on a phone
-  const W = Math.round(Math.min(900, Math.max(320, $("plots").clientWidth || 720)));
+  const W = Math.round(Math.min(900, Math.max(320, box.clientWidth || 720)));
   const H = W < 560 ? 240 : 300, L = 56, R = 16, T = 16, B = 34;
-  const xs = s.axes[0];
-  const ys = s.u.concat(s.exact || []);
+  const main = series[0].values;
+  const ys = series.flatMap((c) => c.values);
   let lo = Math.min(...ys), hi = Math.max(...ys);
   if (hi - lo < 1e-12) { lo -= 1; hi += 1; }
   const pad = (hi - lo) * 0.08; lo -= pad; hi += pad;
@@ -701,7 +781,7 @@ function lineChart(s, when) {
   svg.setAttribute("viewBox", `0 0 ${W} ${H}`);
   svg.setAttribute("class", "chart");
   svg.setAttribute("role", "img");
-  svg.setAttribute("aria-label", `${when}u(x) 的曲线，取值从 ${fmt(Math.min(...s.u))} 到 ${fmt(Math.max(...s.u))}`);
+  svg.setAttribute("aria-label", `${caption}：${series[0].name}，取值从 ${fmt(Math.min(...main))} 到 ${fmt(Math.max(...main))}`);
   const add = (tag, attrs, text) => {
     const n = document.createElementNS(ns, tag);
     for (const [k, v] of Object.entries(attrs)) n.setAttribute(k, v);
@@ -717,13 +797,12 @@ function lineChart(s, when) {
   }
   const path = (vals) => vals.map((v, i) => `${i ? "L" : "M"}${px(xs[i]).toFixed(1)},${py(v).toFixed(1)}`).join("");
   const base = Math.min(Math.max(0, lo), hi);
-  add("path", { class: "area", d: `${path(s.u)}L${px(x1).toFixed(1)},${py(base).toFixed(1)}L${px(x0).toFixed(1)},${py(base).toFixed(1)}Z` });
-  add("path", { class: "u", d: path(s.u), fill: "none", "stroke-width": 3, "stroke-linecap": "round", "stroke-linejoin": "round" });
-  if (s.exact) add("path", { class: "exact", d: path(s.exact), fill: "none", "stroke-width": 1.6, "stroke-dasharray": "6 6" });
+  add("path", { class: "area", d: `${path(main)}L${px(x1).toFixed(1)},${py(base).toFixed(1)}L${px(x0).toFixed(1)},${py(base).toFixed(1)}Z` });
+  add("path", { class: "u", d: path(main), fill: "none", "stroke-width": 3, "stroke-linecap": "round", "stroke-linejoin": "round" });
+  for (const c of series.slice(1)) add("path", { class: "exact", d: path(c.values), fill: "none", "stroke-width": 1.6, "stroke-dasharray": "6 6" });
   const legend = el("div", { class: "legend" },
-    el("span", {}, el("i", { class: "swatch" }), "数值解"),
-    ...(s.exact ? [el("span", {}, el("i", { class: "swatch dash" }), "精确解")] : []));
-  return el("figure", {}, el("div", { class: "fig-head" }, el("figcaption", {}, `${when}u(x)`), legend), svg);
+    ...series.map((c, i) => el("span", {}, el("i", { class: i ? "swatch dash" : "swatch" }), c.name)));
+  return el("figure", {}, el("div", { class: "fig-head" }, el("figcaption", {}, caption), legend), svg);
 }
 
 // Turbo colour map, sampled at nine stops (matches the CSS ramp)
@@ -924,9 +1003,14 @@ async function init() {
     const ex = info.examples.find((e) => e.name === $("preset").value);
     if (ex) { fillForm(ex.problem); setTol(ex.tol); }
   });
-  for (const id of ["kind", "boundary", "domain", "t_final", "coefficients"]) $(id).addEventListener("input", updateEquation);
+  for (const id of ["kind", "boundary", "domain", "t_final", "coefficients", ...FIELDS]) $(id).addEventListener("input", updateEquation);
   document.querySelectorAll(".tol button").forEach((b) => b.addEventListener("click", () => setTol(b.dataset.tol)));
   $("tol").addEventListener("input", () => setTol($("tol").value, false));
+  for (const idea of IDEAS) {
+    const b = el("button", { type: "button" }, idea);
+    b.addEventListener("click", () => { $("text").value = idea; $("text").focus(); });
+    $("ideas").append(b);
+  }
   $("tab-form").addEventListener("click", () => setMode("form"));
   $("tab-text").addEventListener("click", () => setMode("text"));
   $("go").addEventListener("click", run);

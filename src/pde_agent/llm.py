@@ -285,7 +285,11 @@ class DeepSeekBrain(Brain):
                 raise LLMError("DEEPSEEK_API_KEY is not set")
             import openai  # optional dependency: pip install "pde-agent[deepseek]"
 
-            client = openai.OpenAI(api_key=api_key, base_url=base_url)
+            # no brotli: httpx2 needs brotli>=1.2 for it, and an older brotli
+            # (common in Anaconda) fails every reply with "process() takes no
+            # keyword arguments"
+            client = openai.OpenAI(api_key=api_key, base_url=base_url,
+                                   default_headers={"Accept-Encoding": "gzip, deflate"})
         self.client = client
         self.model = model
         self.effort = effort

@@ -140,6 +140,8 @@ def test_provider_choice(monkeypatch):
     brain = make_brain("deepseek", "deepseek-flash")
     assert isinstance(brain, DeepSeekBrain) and brain.model == "deepseek-flash"
     assert str(brain.client.base_url).rstrip("/") == "https://api.deepseek.com"
+    # brotli is never asked for: an old brotli package breaks httpx2's decoder
+    assert "br" not in brain.client.default_headers["Accept-Encoding"]
 
 
 def test_requests_through_the_real_sdk():

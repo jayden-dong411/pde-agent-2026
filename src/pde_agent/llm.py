@@ -226,11 +226,12 @@ class Brain:
 class ClaudeBrain(Brain):
     provider = "claude"
 
-    def __init__(self, client: Any = None, model: str = DEFAULT_MODEL, effort: str = "high", max_tokens: int = 64000):
+    def __init__(self, client: Any = None, model: str = DEFAULT_MODEL, effort: str = "high", max_tokens: int = 64000,
+                 api_key: str | None = None):
         if client is None:
             import anthropic  # optional dependency: pip install "pde-agent[llm]"
 
-            client = anthropic.Anthropic()
+            client = anthropic.Anthropic(api_key=api_key) if api_key else anthropic.Anthropic()
         self.client = client
         self.model = model
         self.effort = effort
@@ -479,11 +480,13 @@ def default_provider(env: dict | None = None) -> str:
     return "claude"
 
 
-def make_brain(provider: str, model: str | None = None, *, log_path: Path | str | None = None) -> Brain:
+def make_brain(provider: str, model: str | None = None, *, log_path: Path | str | None = None,
+               api_key: str | None = None) -> Brain:
+    """A brain for ``provider``; ``api_key`` overrides the provider's environment variable."""
     if provider == "claude":
-        return ClaudeBrain(model=model or DEFAULT_MODEL)
+        return ClaudeBrain(model=model or DEFAULT_MODEL, api_key=api_key)
     if provider == "deepseek":
-        return DeepSeekBrain(model=model or DEEPSEEK_MODEL, log_path=log_path)
+        return DeepSeekBrain(model=model or DEEPSEEK_MODEL, log_path=log_path, api_key=api_key)
     raise ValueError(f"unknown language model provider {provider!r} (use one of {', '.join(PROVIDERS)})")
 
 

@@ -13,6 +13,7 @@ from .agent import PDEAgent, default_home
 from .curriculum import basic_curriculum, frontier_lessons, run_curriculum
 from .llm import PROVIDERS, LLMError, default_provider
 from .problem import PDEProblem
+from .settings import Settings
 
 
 def _brain(args):
@@ -21,7 +22,8 @@ def _brain(args):
     from .llm import make_brain
 
     home = Path(args.home) if args.home else default_home()
-    return make_brain(args.llm, args.model, log_path=home / "deepseek_requests.jsonl")
+    saved_key = Settings(home).key(args.llm)  # a key saved on the web page
+    return make_brain(args.llm, args.model, log_path=home / "deepseek_requests.jsonl", api_key=saved_key or None)
 
 
 def _agent(args) -> PDEAgent:
@@ -136,7 +138,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--version", action="version", version=f"%(prog)s {__version__}")
     parser.add_argument("--home", help="经验和技能的存放目录（默认 ~/.pde_agent 或 $PDE_AGENT_HOME）")
     parser.add_argument("--llm", choices=sorted(PROVIDERS),
-                        help="用哪个大模型（默认：只设置了 DEEPSEEK_API_KEY 时用 deepseek，否则用 claude）")
+                        help="用哪个大模型（默认：网页“设置”里选的；没选过时，只设置了 DEEPSEEK_API_KEY 就用 deepseek，否则用 claude）")
     parser.add_argument("--model", help="模型名（默认 Claude 用 claude-opus-5-5，DeepSeek 用 deepseek-flash）")
     parser.add_argument("--no-explore", action="store_true", help="只用已知最好的方法，不尝试新方法")
     sub = parser.add_subparsers(dest="command", required=True)
@@ -173,7 +175,9 @@ def main(argv: list[str] | None = None) -> int:
     p.set_defaults(func=cmd_app)
 
     args = parser.parse_args(argv)
-    args.llm = args.llm or default_provider()
+    saved = Settings(Path(args.home) if args.home else default_home())  # choices saved on the web page
+    args.llm = args.llm or saved.provider or default_provider()
+    args.model = args.model or saved.model(args.llm)
     try:
         return args.func(args)
     except ModuleNotFoundError as exc:

@@ -266,3 +266,67 @@ def test_preview_draws_the_given_functions(serve):
 
     status, data = call(base + "/api/preview", {"problem": {"kind": "poisson", "domain": [[0, 1]], "exact": "sin(pi*"}})
     assert status == 400 and "题目有误" in data["error"]
+
+
+def test_math_chat_sends_the_conversation(serve):
+    client = ScriptedOpenAI(["**结论**：√2 是无理数。\n\n1. 假设 √2 = p/q", ("length", "很长的回答")])
+    base = serve(make_brain=lambda provider, model, **kw: DeepSeekBrain(client=client))
+    history = [{"role": "assistant", "content": "（页面里残留的开头）"},
+               {"role": "user", "content": " 怎么证明 √2 是无理数？ "}]
+    status, data = call(base + "/api/chat", {"messages": history})
+    assert status == 200 and data["answer"].startswith("**结论**") and data["model"] == "DeepSeek · deepseek-flash"
+    sent = client.calls[0]
+    assert "response_format" not in sent and sent["extra_body"] == {"thinking": {"type": "enabled"}}
+    assert sent["max_tokens"] == 32768
+    system, question = sent["messages"]
+    assert system["role"] == "system" and "LaTeX" in system["content"]
+    assert question == {"role": "user", "content": "怎么证明 √2 是无理数？"}  # leading reply dropped, trimmed
+
+    history = [question, {"role": "assistant", "content": data["answer"]}, {"role": "user", "content": "再详细一点"}]
+    status, data = call(base + "/api/chat", {"messages": history})
+    assert status == 200 and data["answer"].endswith("（回答太长，被截断了。）")
+    assert [m["role"] for m in client.calls[1]["messages"]] == ["system", "user", "assistant", "user"]
+
+
+@pytest.mark.parametrize("body, message", [
+    ({"messages": []}, "请先输入问题"),
+    ({"messages": [{"role": "system", "content": "x"}]}, "格式不对"),
+    ({"messages": [{"role": "user", "content": "x" * 8001}]}, "最多"),
+    ({"messages": [{"role": "user", "content": "a"}, {"role": "assistant", "content": "b"}]}, "最后一条"),
+])
+def test_bad_chat_requests(serve, body, message):
+    status, data = call(serve(make_brain=lambda provider, model, **kw: None) + "/api/chat", body)
+    assert status == 400 and message in data["error"]
+
+
+def test_chat_without_key_and_long_history(serve, monkeypatch):
+    monkeypatch.delenv("DEEPSEEK_API_KEY", raising=False)
+    status, data = call(serve() + "/api/chat", {"messages": [{"role": "user", "content": "1+1"}]})
+    assert status == 502 and "API key" in data["error"]
+
+    seen = []
+
+    class Recorder:
+        def answer(self, system, messages):
+            seen.append(messages)
+            return "好"
+
+    base = serve(make_brain=lambda provider, model, **kw: Recorder())
+    long = [{"role": r, "content": "数" * 7000} for r in ["user", "assistant"] * 5] + [{"role": "user", "content": "最后"}]
+    status, data = call(base + "/api/chat", {"messages": long})
+    assert status == 200 and data["answer"] == "好"
+    kept = seen[0]
+    assert kept[0]["role"] == "user" and kept[-1]["content"] == "最后"
+    assert sum(len(m["content"]) for m in kept) <= 40000
+
+
+def test_claude_answers_in_plain_text():
+    from test_llm import ScriptedClient
+    from pde_agent.llm import ClaudeBrain
+
+    client = ScriptedClient(["答案是 2"])
+    client.messages = client.beta.messages
+    brain = ClaudeBrain(client=client)
+    assert brain.answer("system", [{"role": "user", "content": "1+1"}]) == "答案是 2"
+    call_ = client.calls[0]
+    assert call_["thinking"] == {"type": "adaptive"} and "output_config" not in call_

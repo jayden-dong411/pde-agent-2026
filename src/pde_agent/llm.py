@@ -38,6 +38,7 @@ DEEPSEEK_MODEL = "deepseek-flash"
 DEEPSEEK_BASE_URL = "https://api.deepseek.com"
 DEEPSEEK_MAX_OUTPUT_TOKENS = 393216  # official Chat Completions output ceiling
 DEEPSEEK_PARSE_TOKENS = 16384
+ANSWER_TOKENS = 32768  # free-form answers in the web page's math Q&A
 # DeepSeek's thinking effort has the levels low, high and max
 # Brain.parse_problem uses our internal medium level; parsing needs less reasoning.
 _DEEPSEEK_EFFORT = {"low": "low", "medium": "low", "high": "high", "max": "max"}
@@ -219,6 +220,10 @@ class Brain:
                 messages.append({"role": "user", "content": f"That problem is invalid: {exc}. Please correct it."})
         raise AssertionError("unreachable")
 
+    def answer(self, system: str, messages: list[dict]) -> str:
+        """A free-text reply to a conversation (the web page's math Q&A)."""
+        raise NotImplementedError
+
     def skill_session(self, task: SkillTask) -> SkillSession:
         return SkillSession(self, task)
 
@@ -269,6 +274,24 @@ class ClaudeBrain(Brain):
             return json.loads(text), message.content
         except json.JSONDecodeError as exc:
             raise LLMError(f"the reply was not valid JSON: {exc}") from exc
+
+    def answer(self, system: str, messages: list[dict]) -> str:
+        try:
+            with self.client.messages.stream(
+                model=self.model, max_tokens=ANSWER_TOKENS, system=system, messages=messages,
+                thinking={"type": "adaptive"},
+            ) as stream:
+                message = stream.get_final_message()
+        except Exception as exc:  # credentials, network, rate limits after the SDK's retries
+            raise LLMError(f"{type(exc).__name__}: {exc}") from exc
+        if message.stop_reason == "refusal":
+            raise LLMError("the model declined this request")
+        text = "".join(b.text for b in message.content if b.type == "text").strip()
+        if not text:
+            raise LLMError("the reply had no text")
+        if message.stop_reason == "max_tokens":
+            text += "\n\n（回答太长，被截断了。）"
+        return text
 
 
 class DeepSeekBrain(Brain):
@@ -357,7 +380,22 @@ class DeepSeekBrain(Brain):
             ]
         raise LLMError(f"no usable JSON reply after 3 attempts: {problem}")
 
-    def _chat(self, messages: list[dict], effort: str, max_tokens: int | None = None) -> tuple[str, str | None]:
+    def answer(self, system: str, messages: list[dict]) -> str:
+        text, finish = self._chat([{"role": "system", "content": system}, *messages], "high",
+                                  min(self.max_tokens, ANSWER_TOKENS), json_mode=False)
+        if finish == "content_filter":
+            raise LLMError("DeepSeek's content filter stopped the reply")
+        if finish == "insufficient_system_resource":
+            raise LLMError("DeepSeek is short of capacity right now; try again later")
+        text = text.strip()
+        if not text:
+            raise LLMError("DeepSeek 的回复是空的，请再问一次。")
+        if finish == "length":
+            text += "\n\n（回答太长，被截断了。）"
+        return text
+
+    def _chat(self, messages: list[dict], effort: str, max_tokens: int | None = None,
+              json_mode: bool = True) -> tuple[str, str | None]:
         """Stream one chat completion; returns the reply text and the finish reason."""
         parts, finish = [], None
         budget = self.max_tokens if max_tokens is None else max_tokens
@@ -375,7 +413,7 @@ class DeepSeekBrain(Brain):
                 model=self.model,
                 messages=messages,
                 max_tokens=budget,
-                response_format={"type": "json_object"},
+                **({"response_format": {"type": "json_object"}} if json_mode else {}),
                 reasoning_effort=level,
                 extra_body={"thinking": {"type": "enabled"}},
                 stream=True,

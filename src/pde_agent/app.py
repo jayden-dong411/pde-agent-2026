@@ -106,6 +106,17 @@ def problem_from_form(payload: dict) -> PDEProblem:
         raise RequestError(f"题目有误：{exc}") from exc
 
 
+CHAT_SYSTEM = """你是这个偏微分方程求解程序网页里的数学助手。用户在这里问偏微分方程数值求解以外的数学问题：微积分、线性代数、常微分方程、概率统计、数论、证明、解题思路、概念解释等等。
+
+- 用中文回答，先给结论，再给关键步骤；计算题要写出过程并检查结果。
+- 页面不能显示 LaTeX。公式用纯文本和 Unicode 写，比如 x² + y² = r²、∫₀¹ f(x) dx、∂u/∂t、√2、≤、→、∑ₖ aₖ；需要对齐的推导可以放进 ``` 代码块。
+- 可以用 **加粗**、列表和小标题，不要用表格和图片。
+- 如果用户要数值求解一个偏微分方程，告诉他用页面上方的“求解”面板。
+- 和数学无关的问题，礼貌地说明这里只回答数学问题。"""
+CHAT_TURNS = 20  # messages of history sent to the model
+CHAT_CHARS = 8000  # per message
+CHAT_TOTAL = 40000
+
 PREVIEW_POINTS = (129, 65)  # per axis for 1-D and 2-D previews
 
 
@@ -247,6 +258,36 @@ class AppState:
     def preview(self, payload: dict) -> dict:
         return preview_json(problem_from_form(payload))
 
+    def chat(self, payload: dict) -> dict:
+        """Answer a math question; the page keeps the conversation and sends it each time."""
+        history = payload.get("messages")
+        if not isinstance(history, list) or not history:
+            raise RequestError("请先输入问题")
+        messages = []
+        for item in history[-CHAT_TURNS:]:
+            if not isinstance(item, dict) or item.get("role") not in ("user", "assistant") \
+                    or not isinstance(item.get("content"), str) or not item["content"].strip():
+                raise RequestError("对话的格式不对")
+            if len(item["content"]) > CHAT_CHARS:
+                raise RequestError(f"一条消息最多 {CHAT_CHARS} 个字")
+            messages.append({"role": item["role"], "content": item["content"].strip()})
+        while messages and messages[0]["role"] != "user":
+            messages.pop(0)  # the model's turn can't come first
+        if not messages or messages[-1]["role"] != "user":
+            raise RequestError("最后一条应该是你的问题")
+        while sum(len(m["content"]) for m in messages) > CHAT_TOTAL and len(messages) > 1:
+            messages = messages[2:] if len(messages) > 2 else messages[1:]
+        while messages[0]["role"] != "user":
+            messages.pop(0)
+        with self.lock:
+            brain = self._brain_or_error()
+        try:
+            text = brain.answer(CHAT_SYSTEM, messages)
+        except LLMError as exc:
+            raise RequestError(self._llm_message(exc), HTTPStatus.BAD_GATEWAY) from exc
+        name, _ = PROVIDERS[self.provider]
+        return {"answer": text, "model": f"{name} · {self.model}"}
+
     def ask(self, payload: dict) -> dict:
         text = str(payload.get("text") or "").strip()
         if not text:
@@ -340,7 +381,7 @@ def make_handler(state: AppState):
             if not self._local_host():
                 return
             routes = {"/api/solve": state.solve, "/api/ask": state.ask, "/api/settings": state.save_settings,
-                      "/api/preview": state.preview}
+                      "/api/preview": state.preview, "/api/chat": state.chat}
             route = routes.get(self.path)
             if route is None:
                 self._json(HTTPStatus.NOT_FOUND, {"error": "not found"})

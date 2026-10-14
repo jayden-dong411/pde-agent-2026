@@ -137,7 +137,7 @@ Module contract:
 
 The problem object (read only):
 - problem.domain (list of (a, b) per spatial dimension), problem.dim, problem.t_final (None when steady), problem.boundary, problem.coefficients (dict; read with .get(name, default)).
-- problem.fn(name) returns f(x, y=0.0, t=0.0) that broadcasts like numpy, for name in "source", "boundary_value" (Dirichlet data g), "initial", "initial_velocity", "exact".
+- problem.fn(name) returns f(x, y=0.0, t=0.0) that broadcasts like numpy, for name in "source", "boundary_value" (Dirichlet data g), "initial", "initial_velocity". The exact solution is never passed to solve(); boundary_value is only meaningful on the boundary; initial and initial_velocity exist only for time-dependent problems.
 
 Grid and result:
 - axes = grid(problem, n): n equal intervals, n + 1 nodes per dimension including both ends. For periodic problems the last node repeats the first, so return u[-1] equal to u[0] along each periodic axis.

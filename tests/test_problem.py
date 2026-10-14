@@ -75,3 +75,61 @@ def test_complete_fills_default_coefficients():
     book = builtin_equations()
     p = book.complete(PDEProblem(kind="wave", domain=[(0, 1)], t_final=1.0, initial="sin(pi*x)"))
     assert p.coefficients == {"c": 1.0}
+
+
+def wave_with_exact():
+    return PDEProblem(kind="wave", domain=[(0, 1)], t_final=1.0, coefficients={"c": 1.0},
+                      exact="sin(pi*x)*cos(t) + x*t")
+
+
+def test_solver_view_hides_the_exact_solution():
+    p = wave_with_exact()
+    v = p.for_solver()
+    assert v is p.for_solver() and v is not p
+    assert not v.has_exact() and v.exact is None
+    with pytest.raises(ValueError, match="has no exact"):
+        v.fn("exact")
+    x = np.linspace(0, 1, 5)
+    np.testing.assert_allclose(v.fn("initial")(x), np.sin(np.pi * x))
+    np.testing.assert_allclose(v.fn("initial_velocity")(x), x)
+    plain = PDEProblem(kind="heat", domain=[(0, 1)], t_final=1.0, initial="sin(pi*x)")
+    assert plain.for_solver() is plain
+
+
+def test_solver_view_knows_boundary_values_only_on_the_boundary():
+    rod = PDEProblem(kind="heat", domain=[(0, 1)], t_final=1.0, exact="sin(pi*x)*exp(-t) + x*t")
+    g, e = rod.for_solver().fn("boundary_value"), rod.fn("exact")
+    ends = np.array([0.0, 1.0])
+    np.testing.assert_allclose(g(ends, 0.0, 0.3), e(ends, 0.0, 0.3), atol=1e-12)
+    assert abs(g(0.5, 0.0, 0.3) - e(0.5, 0.0, 0.3)) > 0.5
+    plate = PDEProblem(kind="poisson", domain=[(0, 1), (0, 2)], exact="exp(x + 2*y)")
+    g, e = plate.for_solver().fn("boundary_value"), plate.fn("exact")
+    s = np.linspace(0, 1, 7)
+    for x, y in ((0 * s, 2 * s), (1 + 0 * s, 2 * s), (s, 0 * s), (s, 2 + 0 * s)):
+        np.testing.assert_allclose(g(x, y), e(x, y), rtol=1e-12)
+    assert abs(g(0.5, 1.0) - e(0.5, 1.0)) > 1.0
+
+
+def test_solver_view_keeps_given_fields_and_its_own_coefficients():
+    p = PDEProblem(kind="heat", domain=[(0, 1)], t_final=1.0, coefficients={"alpha": 0.5},
+                   initial="sin(pi*x)", boundary_value="x*t", exact="sin(pi*x)*exp(-t) + x*t")
+    v = p.for_solver()
+    for name in ("source", "initial", "boundary_value"):
+        assert v.expr(name) == p.expr(name)
+    v.coefficients["alpha"] = 9.0
+    assert p.coefficients == {"alpha": 0.5}
+
+
+def test_steady_solver_view_has_no_initial_data():
+    v = PDEProblem(kind="poisson", domain=[(0, 1)], exact="sin(pi*x)").for_solver()
+    with pytest.raises(ValueError, match="has no initial"):
+        v.fn("initial")
+    assert not np.any(v.fn("initial_velocity")(np.linspace(0, 1, 5)))
+
+
+def test_copies_of_a_problem_do_not_share_its_view():
+    p = wave_with_exact()
+    v = p.for_solver()
+    q = p.with_coefficients({"c": 1.0, "k": 2.0})
+    assert q is not p and q.for_solver() is not v
+    assert PDEProblem.from_dict(p.to_dict()) == p

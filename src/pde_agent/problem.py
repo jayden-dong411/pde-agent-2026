@@ -8,6 +8,7 @@ and ``t`` such as ``"sin(pi*x)*exp(-t)"``.
 
 from __future__ import annotations
 
+import copy
 import io
 import math
 import re
@@ -83,6 +84,29 @@ def lambdify_field(expr: sp.Expr) -> Field:
     return evaluate
 
 
+def _boundary_interpolant(exact: sp.Expr, domain: list[tuple[float, float]]) -> sp.Expr:
+    """Dirichlet data that match ``exact`` on the boundary and ignore its interior.
+
+    Linear interpolation between the two end values in 1-D, a Coons patch over
+    the four edges in 2-D. 3-D has no such blend and returns ``exact`` itself
+    (a known limitation).
+    """
+    if len(domain) == 3:
+        return exact
+    a, b = domain[0]
+    s = (X - a) / (b - a)
+    if len(domain) == 1:
+        return (1 - s) * exact.subs(X, a) + s * exact.subs(X, b)
+    c, d = domain[1]
+    r = (Y - c) / (d - c)
+
+    def e(p, q):
+        return exact.subs({X: p, Y: q})
+
+    return ((1 - s) * e(a, Y) + s * e(b, Y) + (1 - r) * e(X, c) + r * e(X, d)
+            - ((1 - s) * (1 - r) * e(a, c) + s * (1 - r) * e(b, c) + (1 - s) * r * e(a, d) + s * r * e(b, d)))
+
+
 @dataclass
 class PDEProblem:
     """A PDE problem ``L(u) = source`` on a box, optionally up to ``t_final``.
@@ -90,7 +114,9 @@ class PDEProblem:
     ``kind`` names the equation (``poisson``, ``heat``, ``advection``,
     ``wave`` or a kind the agent learned later); ``equation`` is an optional
     human-readable form such as ``"u_t = D*u_xx - r*u + f"``. Missing initial
-    or boundary data fall back to ``exact`` when it is given.
+    or boundary data fall back to ``exact`` when it is given. Solvers get
+    ``for_solver()``, a copy without ``exact`` whose fallbacks keep only
+    boundary information.
     """
 
     kind: str
@@ -108,6 +134,7 @@ class PDEProblem:
     description: str = ""
     _exprs: dict[str, sp.Expr] = field(default_factory=dict, init=False, repr=False, compare=False)
     _fields: dict[str, Field] = field(default_factory=dict, init=False, repr=False, compare=False)
+    _view: PDEProblem | None = field(default=None, init=False, repr=False, compare=False)
 
     def __post_init__(self) -> None:
         if not self.kind or not re.fullmatch(r"[a-z][a-z0-9_]*", self.kind):
@@ -167,6 +194,39 @@ class PDEProblem:
         if name == "source":
             return sp.Integer(0)
         return None
+
+    def for_solver(self) -> PDEProblem:
+        """The problem as a solver gets it: a copy without ``exact``, made once and cached.
+
+        A problem without an exact solution is returned as it is. The copy
+        shares the parsed expressions of the fields the problem gives (they are
+        not parsed again) and holds no reference to the original. Missing
+        fields are rebuilt from ``exact`` as far as a solver may know them:
+        initial data at ``t = 0`` and Dirichlet data through the boundary
+        values alone. Periodic problems get no boundary data and read zero.
+        """
+        exact = self._exprs.get("exact")
+        if exact is None:
+            return self
+        if self._view is None:
+            view = copy.copy(self)
+            view.exact = None
+            view.coefficients, view.domain = dict(self.coefficients), list(self.domain)
+            view._exprs = {name: expr for name, expr in self._exprs.items() if name != "exact"}
+            view._fields, view._view = {}, None
+            filled: dict[str, sp.Expr] = {}
+            if self.time_dependent:
+                if "initial" not in view._exprs:
+                    filled["initial"] = exact.subs(T, 0)
+                if "initial_velocity" not in view._exprs:
+                    filled["initial_velocity"] = sp.diff(exact, T).subs(T, 0)
+            if self.boundary == "dirichlet" and "boundary_value" not in view._exprs:
+                filled["boundary_value"] = _boundary_interpolant(exact, self.domain)
+            for name, expr in filled.items():
+                view._exprs[name] = expr
+                setattr(view, name, str(expr))  # the strings only serve debugging
+            self._view = view
+        return self._view
 
     def fn(self, name: str) -> Field:
         """Numpy-callable ``f(x, y=0, t=0)`` for a field (cached)."""

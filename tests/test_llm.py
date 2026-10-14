@@ -8,7 +8,7 @@ import pytest
 from pde_agent.agent import PDEAgent
 from pde_agent.curriculum import frontier_lessons
 from pde_agent.equations import builtin_equations
-from pde_agent.llm import DEFAULT_MODEL, FALLBACK_BETA, ClaudeBrain, LLMError
+from pde_agent.llm import DEFAULT_MODEL, FALLBACK_BETA, SKILL_SYSTEM, ClaudeBrain, LLMError
 from pde_agent.skills import TEMPLATE
 
 GOOD = TEMPLATE.read_text(encoding="utf-8")
@@ -190,3 +190,8 @@ def test_api_failures_become_a_failed_lesson_not_a_crash(tmp_path):
     report = agent.solve(lesson.problem, lesson.tol)
     assert not report.success
     assert "network unreachable" in report.learned[0].message
+
+
+def test_skill_prompt_does_not_offer_the_exact_solution():
+    assert '"initial_velocity", "exact"' not in SKILL_SYSTEM
+    assert "The exact solution is never passed to solve()" in SKILL_SYSTEM

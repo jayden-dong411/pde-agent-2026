@@ -1,5 +1,8 @@
+import numpy as np
 import pytest
 
+from pde_agent.benchmark import reference_problems
+from pde_agent.curriculum import basic_curriculum, frontier_lessons
 from pde_agent.equations import builtin_equations, manufactured_problem
 from pde_agent.problem import PDEProblem
 from pde_agent.solvers import builtin_registry
@@ -49,3 +52,16 @@ def test_self_convergence_without_exact_solution():
     study = convergence_study(builtin_registry().get("poisson.fd2"), problem, [16, 32, 64, 128])
     assert study.kind == "difference"
     assert study.final_order == pytest.approx(2.0, abs=0.2)
+
+
+WITH_EXACT = [item.problem for item in basic_curriculum() + frontier_lessons() + reference_problems()
+              if item.problem.has_exact()]
+
+
+@pytest.mark.parametrize("problem", WITH_EXACT, ids=lambda p: p.name)
+def test_builtin_solvers_get_the_same_answer_from_the_solver_view(problem):
+    n = 32 if problem.dim == 1 else 16
+    for spec in builtin_registry().for_problem(problem):
+        original = spec.solve(problem, n, {}).u
+        view = spec.solve(problem.for_solver(), n, {}).u
+        assert np.max(np.abs(original - view)) <= 1e-12 * np.max(np.abs(original))

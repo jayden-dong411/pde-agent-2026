@@ -3,7 +3,9 @@
 One call to ``solve`` is an episode:
 
 1. rank the methods that can handle the problem using past experience,
-2. solve on a grid predicted from experience (or a coarse default),
+2. solve on a grid predicted from experience (or a coarse default), but never
+   below the resolution floor, the first grid that resolves the problem's data
+   (a problem no grid resolves is reported, not solved),
 3. measure the error (exact solution) or estimate it (grid refinement),
 4. refine until the tolerance is met, or move to the next method when a
    method blows up, stagnates or runs out of budget,
@@ -30,7 +32,7 @@ from .problem import PDEProblem
 from .skills import SkillLibrary, SkillTask, ValidationReport, validate_candidate
 from .solvers import builtin_registry
 from .solvers.base import SolveResult, SolverDiverged, SolverSpec
-from .verify import exact_error, relative_error, restrict
+from .verify import exact_error, relative_error, resolution_floor, restrict
 
 BASE_N = {1: 16, 2: 8, 3: 4}
 MAX_N = {1: 4096, 2: 256, 3: 64}
@@ -83,6 +85,7 @@ class SolveReport:
     trials: list[dict] = field(default_factory=list)
     learned: list[LearnOutcome] = field(default_factory=list)
     message: str = ""
+    min_n: int = 0  # resolution floor: the first grid that resolves the problem's data (0 if no grid does)
 
     @property
     def solver_runs(self) -> int:
@@ -138,6 +141,16 @@ class PDEAgent:
             raise ValueError("tol must be positive")
         problem = self.equations.complete(problem)
         report = SolveReport(problem=problem, tol=tol, error_kind="exact" if problem.has_exact() else "estimated")
+        eq = self.equations.get(problem.kind)
+        time_order = eq.time_order if eq else int(problem.time_dependent)
+        # an estimate's coarse companion is the first grid (BASE_N // 2), so it has to see the data too
+        start = max(4, BASE_N[problem.dim] // 2) if report.error_kind == "estimated" else BASE_N[problem.dim]
+        floor = resolution_floor(problem, tol, time_order, start, MAX_N[problem.dim])
+        if floor is None:
+            report.message = f"题目数据在最细网格（n = {MAX_N[problem.dim]}）上也分辨不清，没有求解"
+            self._remember(report)
+            return report
+        report.min_n = floor
         candidates = self.registry.for_problem(problem)
         can_learn = learn and self.brain is not None
 
@@ -221,7 +234,7 @@ class PDEAgent:
         n = self.memory.suggest_n(problem.signature(), spec, tol, report.error_kind) or BASE_N[problem.dim]
         if estimated:
             n //= 2  # the estimate needs a coarser companion solution
-        n = max(4, min(n, max_n // 2 if estimated else max_n))
+        n = min(max(4, report.min_n, n), max_n // 2 if estimated else max_n)
 
         prev: SolveResult | None = None
         prev_error = prev_diff = prev_ratio = None

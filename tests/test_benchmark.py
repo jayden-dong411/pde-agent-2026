@@ -3,9 +3,9 @@ import json
 import numpy as np
 import pytest
 
-from pde_agent.benchmark import equation_for, reference_problems, run_benchmark, score_method
+from pde_agent.benchmark import BenchProblem, equation_for, reference_problems, run_benchmark, score_method
 from pde_agent.cli import main
-from pde_agent.problem import lambdify_field
+from pde_agent.problem import PDEProblem, lambdify_field
 from pde_agent.solvers import builtin_registry
 
 
@@ -48,3 +48,19 @@ def test_bench_command(tmp_path, capsys):
     assert "poisson.fd2 ★" in out and "agent 解出 1/1 道，其中 1/1 道选中了最快的方法" in out
     assert json.loads(out_json.read_text(encoding="utf-8"))[0]["best_method"] == "poisson.fd2"
     assert main(["--home", str(tmp_path), "bench", "--problem", "nope"]) == 1
+
+
+def test_methods_start_at_the_resolution_floor():
+    aliased = BenchProblem("aliased", "R3", PDEProblem(
+        kind="heat", domain=[(0.0, 1.0)], t_final=0.01, coefficients={"alpha": 1e-4},
+        initial="sin(32*pi*x)", exact="sin(32*pi*x)*exp(-0.0001*(32*pi)**2*t)"))
+    for spec in builtin_registry().for_problem(aliased.problem):
+        score = score_method(spec, aliased, repeat=1)
+        assert score.runs[0].n == 128 and score.best.n == 128
+
+
+def test_unresolvable_problems_get_no_runs():
+    noise = BenchProblem("noise", "分辨不清", PDEProblem(
+        kind="poisson", domain=[(0.0, 1.0)], source="(5000*pi)**2*sin(5000*pi*x)", exact="sin(5000*pi*x)"))
+    score = score_method(builtin_registry().get("poisson.fd2"), noise, repeat=1)
+    assert score.runs == [] and score.outcome == "max_n"

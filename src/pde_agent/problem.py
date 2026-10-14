@@ -50,6 +50,8 @@ def parse_expr(text: str, coefficients: dict[str, float] | None = None) -> sp.Ex
     """Parse an expression in x, y, t; coefficient names are substituted."""
     if not isinstance(text, str) or not text.strip():
         raise ValueError(f"empty expression: {text!r}")
+    # sympify drops newlines, which would glue checked names (l, e, n) into an unchecked one (len)
+    text = " ".join(text.split())
     if not _SAFE_CHARS.match(text):
         raise ValueError(f"unsupported characters in expression: {text!r}")
     coefficients = coefficients or {}

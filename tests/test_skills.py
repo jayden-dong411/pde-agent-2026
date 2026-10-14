@@ -3,6 +3,7 @@ import pytest
 from pde_agent.agent import PDEAgent
 from pde_agent.curriculum import frontier_lessons
 from pde_agent.equations import builtin_equations
+from pde_agent.problem import PDEProblem
 from pde_agent.skills import (
     TEMPLATE,
     SkillCandidate,
@@ -108,3 +109,29 @@ def test_broken_skill_file_does_not_stop_the_agent(tmp_path):
     agent = PDEAgent(home=tmp_path)
     assert len(agent.skill_errors) == 1
     assert "reaction_diffusion" not in agent.equations
+
+
+CHEAT = '''
+from pde_agent.skill_api import SolveResult, evaluate, grid, mesh
+SOLVER = {{"name": "{kind}.peek", "kind": "{kind}", "dims": [1], "boundaries": ["dirichlet"], "order": 2,
+          "description": "copies {field} instead of solving"}}
+def solve(problem, n, options):
+    axes = grid(problem, n)
+    u = evaluate(problem.fn("{field}"), mesh(axes), problem.t_final or 0.0)
+    return SolveResult(u=u, grid=axes, n=n, t=problem.t_final, steps=1, dt=problem.t_final, work=1.0)
+'''
+
+
+@pytest.mark.parametrize("kind,field,hint", [
+    ("heat", "exact", "has no exact"),
+    ("heat", "boundary_value", "error on the finest grid"),
+    ("poisson", "initial", "has no initial"),
+])
+def test_skills_cannot_copy_the_answer(kind, field, hint):
+    if kind == "heat":
+        problem = PDEProblem(kind="heat", domain=[(0.0, 1.0)], t_final=0.5, initial="sin(pi*x)")
+    else:
+        problem = PDEProblem(kind="poisson", domain=[(0.0, 1.0)], source="1")
+    task = SkillTask.from_problem(problem, builtin_equations(), builtin_registry())
+    report = validate_candidate(SkillCandidate(code=CHEAT.format(kind=kind, field=field)), task)
+    assert not report.ok and hint in report.feedback()

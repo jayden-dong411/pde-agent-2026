@@ -66,7 +66,8 @@ class SolverSpec:
 
     def run(self, problem: PDEProblem, n: int, options: dict | None = None) -> SolveResult:
         start = time.perf_counter()
-        result = self.solve(problem, int(n), dict(options or {}))
+        # the one place where solvers lose sight of the exact solution
+        result = self.solve(problem.for_solver(), int(n), dict(options or {}))
         result.runtime = time.perf_counter() - start
         result.method = self.name
         expected = (int(n) + 1,) * problem.dim

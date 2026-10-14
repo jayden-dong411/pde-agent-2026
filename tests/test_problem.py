@@ -25,6 +25,12 @@ def test_parse_expr_rejects_code_and_unknown_names(text):
         parse_expr(text)
 
 
+def test_parse_expr_reads_newlines_as_spaces():
+    with pytest.raises(ValueError):  # sympify drops newlines, which glued l, e, n into the builtin len
+        parse_expr("l\ne\nn((1, 2)) + x", {"l": 1.0, "n": 1.0})
+    assert parse_expr("sin(pi*x)\n*exp(-t)") == sp.sin(sp.pi * X) * sp.exp(-T)
+
+
 def test_fields_fall_back_to_exact_solution():
     p = PDEProblem(kind="wave", domain=[(0, 1)], t_final=1.0, exact="sin(pi*x)*cos(t) + x*t")
     x = np.linspace(0, 1, 5)

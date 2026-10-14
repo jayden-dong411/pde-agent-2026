@@ -45,6 +45,7 @@ pip install -e ".[dev,deepseek]"   # 加上 DeepSeek（需要 DEEPSEEK_API_KEY�
 pde-agent app                      # 打开网页版（见下面“网页版”）
 pde-agent curriculum --rounds 2    # 从基础方程开始练习
 pde-agent stats                    # 看学到的经验
+pde-agent bench                    # 在基准题上给各个方法和 agent 的选择打分
 pde-agent skills                   # 看已知的方程和方法
 pde-agent solve examples/heat_rod.json --tol 1e-4
 
@@ -64,6 +65,30 @@ pde-agent app        # 打开 http://127.0.0.1:8765/
 **在网页里选大模型、填 API key**：点右上角的“大模型”按钮，选 Claude 或 DeepSeek 和模型，粘贴 API key，点“保存”。以后每次打开网页（命令行也一样）都会自动用这里保存的选择和 key，不用再设置环境变量。key 保存在本机的 `~/.pde_agent/settings.json`（跟随 `--home` / `PDE_AGENT_HOME`），只有你的账户能读，页面上只显示开头和结尾几位；在同一个窗口里可以删除。
 
 ![网页版](docs/app.png)
+
+## 基准评测
+
+`pde-agent bench` 在 7 道有精确解的基准题上给方法打分，用来比较求解方法、检查 agent 选得好不好：
+
+| 基准题 | 考什么 |
+| --- | --- |
+| `heat-decay` | 热方程，单个模态指数衰减 |
+| `heat-stiff` | 热方程，高频模态瞬间衰减（刚性）：Crank–Nicolson 在粗网格上振荡，误差很大 |
+| `advection-smooth` | 对流，光滑波平移一个周期 |
+| `advection-long` | 对流，传播 5 个周期，考验数值耗散和色散 |
+| `wave-two-modes` | 波动方程，两个驻波模态叠加 |
+| `poisson-2d` | 二维 Poisson |
+| `burgers-cole-hopf` | 黏性 Burgers 方程，Cole–Hopf 精确解；没有内置方法，学会的技能可以在这里比 |
+
+每个能解这道题的方法从粗网格开始逐次加密，直到误差达到精度要求（默认 1e-3）。**方法的得分是达到精度那次求解的耗时**（重复 3 次取最快），也就是“如果事先知道该用多大网格”时的代价，最快的标 ★。然后用一个没有任何经验的 agent 解同一道题（不读也不写经验记忆，会加载学会的技能），看它最后用了哪个方法、整个过程（包括试错）花了最快方法的几倍时间。
+
+```bash
+pde-agent bench                                  # 全部基准题
+pde-agent bench --problem heat-stiff --tol 1e-4  # 只跑一道题，换个精度
+pde-agent bench --no-agent --json bench.json     # 只给方法打分，详细结果存成 JSON
+```
+
+耗时是墙钟时间，换台机器会变，但同一台机器上方法之间的比较是可靠的。
 
 ## 多人共享经验
 
@@ -135,6 +160,7 @@ src/pde_agent/
   agent.py        主循环：选方法、求解、验证、加密、记忆、学习
   llm.py          大模型（Claude、DeepSeek）：理解自然语言问题、编写和修复新求解器
   curriculum.py   课程表
+  benchmark.py    基准题和评分
   app.py          网页版的本地服务
   settings.py     网页里保存的大模型选择、API key 和经验中心
   hub.py          经验中心服务（多人共享经验）

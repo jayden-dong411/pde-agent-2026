@@ -20,7 +20,7 @@ import sympy as sp
 from .equations import Equation, builtin_equations
 from .problem import PDEProblem
 from .solvers.base import SolverDiverged, SolverRegistry
-from .verify import exact_error
+from .verify import exact_error, resolution_floor
 
 BASE_N = {1: 16, 2: 8, 3: 4}
 MAX_N = {1: 4096, 2: 256, 3: 64}
@@ -171,12 +171,18 @@ class ProblemScore:
 def score_method(spec, bench: BenchProblem, time_budget: float = 20.0, repeat: int = 3) -> MethodScore:
     """Run ``spec`` on doubling grids until it reaches the tolerance, fails or runs out of time.
 
-    The run that reaches the tolerance is repeated and its fastest time kept,
-    since millisecond timings are noisy.
+    The first grid is the resolution floor of the problem's data (no runs at
+    all when no grid resolves them). The run that reaches the tolerance is
+    repeated and its fastest time kept, since millisecond timings are noisy.
     """
     problem = bench.problem
     score = MethodScore(spec.name, spec.order)
-    n, max_n = BASE_N[problem.dim], MAX_N[problem.dim]
+    eq = equation_for(problem.kind)
+    time_order = eq.time_order if eq else int(problem.time_dependent)
+    max_n = MAX_N[problem.dim]
+    n = resolution_floor(problem, bench.tol, time_order, BASE_N[problem.dim], max_n)
+    if n is None:  # no grid up to max_n resolves the data, so there is nothing a run could be scored on
+        return score
     deadline = time.monotonic() + time_budget
     while n <= max_n and time.monotonic() < deadline:
         try:

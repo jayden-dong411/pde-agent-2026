@@ -1,4 +1,4 @@
-"""Command line: ``pde-agent curriculum | solve | ask | learn | stats | skills | app``."""
+"""Command line: ``pde-agent curriculum | solve | ask | learn | bench | stats | skills | app``."""
 
 from __future__ import annotations
 
@@ -98,6 +98,50 @@ def cmd_learn(args) -> int:
     if outcome.report:
         print(outcome.report.feedback())
     return 1
+
+
+def cmd_bench(args) -> int:
+    from .benchmark import reference_problems, run_benchmark
+
+    problems = reference_problems()
+    if args.problem:
+        unknown = set(args.problem) - {b.name for b in problems}
+        if unknown:
+            print(f"没有这道基准题：{', '.join(sorted(unknown))}（可选：{', '.join(b.name for b in problems)}）", file=sys.stderr)
+            return 1
+        problems = [b for b in problems if b.name in args.problem]
+    if args.tol:
+        for bench in problems:
+            bench.tol = args.tol
+    agent = _agent(args)  # its registry includes learned skills
+    scores = []
+    print(f"{'基准题':<20} {'方法':<32} {'结果':<6} {'n':>5} {'误差':>9} {'耗时(秒)':>9} {'实测阶':>6}")
+    for score in run_benchmark(problems, agent.registry, args.method, agent.home, not args.no_agent, args.budget):
+        scores.append(score)
+        best = score.best
+        for m in score.methods:
+            run = m.best or (m.runs[-1] if m.runs else None)
+            mark = " ★" if m is best else ""
+            outcome = "达到" if m.best else {"unstable": "发散", "error": "出错"}.get(m.outcome, "未达到")
+            print(f"{score.bench.name:<20} {m.method + mark:<32} {outcome:<6} {run.n if run else '-':>5} "
+                  f"{_fmt(run.error if run else None):>9} {_fmt(m.time_to_tol, '.4f'):>9} {_fmt(m.observed_order, '.2f'):>6}")
+        if not score.methods:
+            print(f"{score.bench.name:<20} （没有能解这类问题的方法）")
+        a = score.agent
+        if a:
+            outcome = "达到" if a.success else "未达到"
+            overhead = f"  是最快方法的 {score.agent_overhead:.1f} 倍" if score.agent_overhead else ""
+            print(f"{score.bench.name:<20} {'agent → ' + (a.method or '-'):<32} {outcome:<6} {a.n or '-':>5} "
+                  f"{_fmt(a.error):>9} {a.runtime:>9.4f} {'':>6}  求解 {a.solver_runs} 次{overhead}")
+    if not args.no_agent:
+        picked = [s for s in scores if s.best and s.agent and s.agent.success]
+        best_pick = sum(s.agent.method == s.best.method for s in picked)
+        print(f"agent 解出 {sum(bool(s.agent and s.agent.success) for s in scores)}/{len(scores)} 道，"
+              f"其中 {best_pick}/{len(picked)} 道选中了最快的方法")
+    if args.json:
+        Path(args.json).write_text(json.dumps([s.to_dict() for s in scores], ensure_ascii=False, indent=2), encoding="utf-8")
+        print(f"详细结果已写入 {args.json}")
+    return 0
 
 
 def cmd_stats(args) -> int:
@@ -239,6 +283,15 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("problem")
     p.add_argument("--reason", default="")
     p.set_defaults(func=cmd_learn)
+
+    p = sub.add_parser("bench", help="在有精确解的基准题上给各个方法和 agent 的选择打分")
+    p.add_argument("--problem", action="append", help="只跑这道题（可重复）")
+    p.add_argument("--method", action="append", help="只跑这个方法（可重复）")
+    p.add_argument("--tol", type=float, help="统一的精度要求（默认每道题自己的，一般是 1e-3）")
+    p.add_argument("--budget", type=float, default=20.0, help="每个方法在每道题上最多用多少秒（默认 20）")
+    p.add_argument("--no-agent", action="store_true", help="只给方法打分，不跑 agent")
+    p.add_argument("--json", help="把详细结果写到这个 JSON 文件")
+    p.set_defaults(func=cmd_bench)
 
     sub.add_parser("stats", help="查看经验记忆").set_defaults(func=cmd_stats)
     sub.add_parser("skills", help="查看已知方程和方法").set_defaults(func=cmd_skills)

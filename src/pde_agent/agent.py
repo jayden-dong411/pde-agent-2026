@@ -126,7 +126,8 @@ class PDEAgent:
         self.validation_timeout = validation_timeout
         self.equations = builtin_equations()
         self.registry = builtin_registry()
-        self.memory = ExperienceStore(self.home / "experience.jsonl" if remember else None)
+        self.memory = ExperienceStore(self.home / "experience.jsonl" if remember else None,
+                                      self.home / "shared_experience.jsonl" if remember else None)
         self.skills = SkillLibrary(self.home / "skills")
         self.skill_errors = self.skills.load_into(self.registry, self.equations)
 

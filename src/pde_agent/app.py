@@ -24,6 +24,7 @@ from .agent import OUTCOMES, PDEAgent, SolveReport
 from .curriculum import basic_curriculum, frontier_lessons
 from .llm import PROVIDERS, LLMError
 from .problem import PDEProblem
+from .cloud import CloudError, HubClient, SyncState, sync
 from .settings import DEFAULT_MODELS, MODELS, Settings, key_hint
 from .verify import exact_values
 
@@ -156,6 +157,9 @@ class AppState:
         self._start = (provider, model)  # from the command line, until settings are saved on the page
         self._make_brain = make_brain
         self.lock = threading.Lock()
+        self._sync_lock = threading.Lock()
+        self.cloud_error: str | None = None
+        self.hub_stats: dict | None = None
 
     @property
     def provider(self) -> str:
@@ -253,6 +257,7 @@ class AppState:
             if learn:
                 self._brain_or_error()
             report = self.agent.solve(problem, tol, learn=learn)
+        self.sync_in_background()
         return report_json(report)
 
     def preview(self, payload: dict) -> dict:
@@ -299,12 +304,80 @@ class AppState:
                 report = self.agent.ask(text, tol)
             except LLMError as exc:
                 raise RequestError(self._llm_message(exc), HTTPStatus.BAD_GATEWAY) from exc
+        self.sync_in_background()
         return report_json(report)
 
     def stats(self) -> dict:
         with self.lock:
             return {"rows": [{**r, "mean_work": _num(r["mean_work"])} for r in self.agent.memory.summary()],
-                    "episodes": len(self.agent.memory.episodes)}
+                    "episodes": len(self.agent.memory.episodes), "shared": len(self.agent.memory.shared)}
+
+    # shared experience ---------------------------------------------------------
+    def get_cloud(self) -> dict:
+        cloud = self.settings.cloud
+        url = cloud.get("url")
+        state = SyncState(self.agent.home).for_hub(url) if url else {}
+        return {
+            "configured": bool(url),
+            "url": url or "",
+            "enabled": bool(cloud.get("enabled")),
+            "token": key_hint(cloud["token"]) if cloud.get("token") else None,
+            "last_sync": state.get("last_sync"),
+            "error": self.cloud_error,
+            "running": self._sync_lock.locked(),
+            "local": len(self.agent.memory.episodes),
+            "shared": len(self.agent.memory.shared),
+            "hub": self.hub_stats,
+        }
+
+    def save_cloud(self, payload: dict) -> dict:
+        url, token = payload.get("url", ""), payload.get("token", "")
+        if not isinstance(url, str) or not isinstance(token, str):
+            raise RequestError("经验中心的设置格式不对")
+        try:
+            self.settings.update_cloud(url, token, enabled=bool(payload.get("enabled", True)),
+                                       clear=bool(payload.get("clear")))
+        except ValueError as exc:
+            raise RequestError(str(exc)) from exc
+        except OSError as exc:
+            raise RequestError(f"保存设置失败：{exc}", HTTPStatus.INTERNAL_SERVER_ERROR) from exc
+        self.cloud_error, self.hub_stats = None, None
+        if self.settings.cloud.get("enabled"):
+            return self.sync_cloud({})
+        return self.get_cloud()
+
+    def sync_cloud(self, payload: dict | None = None) -> dict:
+        """Sync now and report the result (the page's “立即同步”)."""
+        if not self.settings.cloud.get("url"):
+            raise RequestError("还没有设置经验中心")
+        if not self._run_sync(wait=True):
+            raise RequestError("正在同步，请稍等", HTTPStatus.CONFLICT)
+        if self.cloud_error:
+            raise RequestError(self.cloud_error, HTTPStatus.BAD_GATEWAY)
+        return self.get_cloud()
+
+    def sync_in_background(self) -> None:
+        if self.settings.cloud.get("enabled"):
+            threading.Thread(target=self._run_sync, daemon=True).start()
+
+    def _run_sync(self, wait: bool = False) -> bool:
+        """One sync at a time; returns False when another one is already running."""
+        cloud = self.settings.cloud
+        if not (self._sync_lock.acquire(timeout=90) if wait else self._sync_lock.acquire(blocking=False)):
+            return False
+        try:
+            client = HubClient(cloud["url"], cloud["token"])
+            sync(self.agent.memory, self.agent.home, client, lock=self.lock)
+            try:
+                self.hub_stats = {k: v for k, v in client.stats().items() if k in ("episodes", "members", "contributors")}
+            except CloudError:
+                pass
+            self.cloud_error = None
+        except (CloudError, ValueError, KeyError) as exc:
+            self.cloud_error = str(exc)
+        finally:
+            self._sync_lock.release()
+        return True
 
     def _brain_or_error(self):
         name, key = PROVIDERS[self.provider]
@@ -374,6 +447,8 @@ def make_handler(state: AppState):
                 self._json(HTTPStatus.OK, state.stats())
             elif self.path == "/api/settings":
                 self._json(HTTPStatus.OK, state.get_settings())
+            elif self.path == "/api/cloud":
+                self._json(HTTPStatus.OK, state.get_cloud())
             else:
                 self._json(HTTPStatus.NOT_FOUND, {"error": "not found"})
 
@@ -381,7 +456,8 @@ def make_handler(state: AppState):
             if not self._local_host():
                 return
             routes = {"/api/solve": state.solve, "/api/ask": state.ask, "/api/settings": state.save_settings,
-                      "/api/preview": state.preview, "/api/chat": state.chat}
+                      "/api/preview": state.preview, "/api/chat": state.chat,
+                      "/api/cloud": state.save_cloud, "/api/cloud/sync": state.sync_cloud}
             route = routes.get(self.path)
             if route is None:
                 self._json(HTTPStatus.NOT_FOUND, {"error": "not found"})
@@ -414,6 +490,7 @@ def serve(state: AppState, port: int = 8765, open_browser: bool = True) -> None:
     server = make_server(state, port)
     url = f"http://127.0.0.1:{server.server_address[1]}/"
     print(f"pde-agent {__version__} 网页版已启动：{url}（按 Ctrl+C 退出）")
+    state.sync_in_background()  # pick up what others learned since last time
     if open_browser:
         threading.Timer(0.5, webbrowser.open, args=(url,)).start()
     try:

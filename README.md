@@ -65,6 +65,37 @@ pde-agent app        # 打开 http://127.0.0.1:8765/
 
 ![网页版](docs/app.png)
 
+## 多人共享经验
+
+几个人可以共用一个“经验中心”：每个人的 agent 解完题都会把记录传上去，同时下载别人的记录。这样大家挑方法、猜网格大小用的是所有人的经验。
+
+**1. 管理员：在一台大家都能访问的服务器上运行经验中心**（需要 Python 3.10+，不用装大模型 SDK）
+
+```bash
+pip install "pde-agent @ git+https://github.com/jayden-dong411/pde-agent-2026"
+pde-agent hub add-member 小明        # 每个成员一个令牌，只显示一次，发给他本人
+pde-agent hub add-member 小红
+pde-agent hub serve --host 0.0.0.0 --port 8800
+```
+
+数据在 `~/.pde_agent_hub`（`--data` 或 `PDE_AGENT_HUB` 可以改）。`pde-agent hub members` 可以查看成员和各自上传的数量，`pde-agent hub remove-member 小明` 会让他的令牌立即失效。
+
+令牌会随每个请求发出，所以对外开放时请在前面加 HTTPS。最省事的是用 [Caddy](https://caddyserver.com)，把域名解析到服务器后，Caddyfile 只需要两行：
+
+```
+pde.example.com {
+    reverse_proxy 127.0.0.1:8800
+}
+```
+
+这时经验中心用 `--host 127.0.0.1` 启动即可，大家的地址就是 `https://pde.example.com`。
+
+**2. 成员：在网页里连上**
+
+打开 `pde-agent app`，点“经验记忆”旁边的“共享经验”，填上地址和令牌，点“保存并同步”。以后打开网页时和每次求解后都会自动同步。命令行可以用 `pde-agent sync --url https://pde.example.com --token pdeh_…`，第一次成功后地址和令牌会被记住，之后直接 `pde-agent sync`。
+
+**会共享什么**：题目类别和表达式、试过的方法、网格、误差和计算量。**不会共享**：API key、大模型学会的新方法的代码（别人的代码不会在你的电脑上运行；只认识你自己也有的方法）、数学问答。经验中心会检查每条记录的格式，不合格的直接拒收。别人的记录存在本机的 `shared_experience.jsonl`，断开经验中心以后仍然会用。
+
 ## 在 Python 里用
 
 
@@ -105,7 +136,9 @@ src/pde_agent/
   llm.py          大模型（Claude、DeepSeek）：理解自然语言问题、编写和修复新求解器
   curriculum.py   课程表
   app.py          网页版的本地服务
-  settings.py     网页里保存的大模型选择和 API key
+  settings.py     网页里保存的大模型选择、API key 和经验中心
+  hub.py          经验中心服务（多人共享经验）
+  cloud.py        和经验中心同步
   templates/      技能模块示例（反应扩散方程）、网页
 ```
 

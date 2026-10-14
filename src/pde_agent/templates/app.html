@@ -313,6 +313,39 @@ th { color: var(--muted); font-weight: 500; font-size: 12px; }
   </form>
 </dialog>
 
+<dialog class="settings" id="cloud-dialog" aria-labelledby="cloud-title">
+  <form id="cloud-form" novalidate>
+    <div class="head">
+      <div>
+        <h2 id="cloud-title">共享经验</h2>
+        <p>连上一个“经验中心”，你的求解记录会自动上传，别人的经验也会下载下来一起用，挑方法和猜网格会更准。</p>
+      </div>
+      <button type="button" class="icon-btn" id="cloud-close" aria-label="关闭">×</button>
+    </div>
+    <div class="field">
+      <label for="cloud-url">经验中心地址</label>
+      <input type="text" id="cloud-url" placeholder="https://pde.example.com" autocomplete="off" spellcheck="false">
+    </div>
+    <div class="field">
+      <label for="cloud-token">访问令牌 <span>· 由经验中心管理员用 pde-agent hub add-member 生成</span></label>
+      <input type="password" id="cloud-token" autocomplete="off" spellcheck="false">
+    </div>
+    <label class="check">
+      <input type="checkbox" id="cloud-enabled" checked>
+      <span>自动同步<small>打开网页时和每次求解后同步；关掉以后只在点“立即同步”时同步</small></span>
+    </label>
+    <p class="hint">会上传：题目类别、题目表达式、用了哪些方法、网格、误差和计算量。不会上传：API key、学会的新方法的代码、数学问答。</p>
+    <p class="hint" id="cloud-state"></p>
+    <p class="alert hidden" id="cloud-error" role="alert"></p>
+    <p class="saved hidden" id="cloud-saved" role="status"></p>
+    <div class="actions">
+      <button type="button" class="link-btn hidden" id="cloud-forget">断开经验中心</button>
+      <button type="button" class="plain-btn" id="cloud-sync">立即同步</button>
+      <button type="submit" class="go" id="cloud-save">保存并同步</button>
+    </div>
+  </form>
+</dialog>
+
 <main id="solve">
   <div class="columns">
     <section class="card composer" aria-labelledby="composer-title">
@@ -487,7 +520,7 @@ th { color: var(--muted); font-weight: 500; font-size: 12px; }
   <section class="card panel" id="memory" aria-labelledby="memory-title">
     <div class="section-head">
       <h2 id="memory-title">经验记忆</h2>
-      <span id="memory-note"></span>
+      <span><span id="memory-note"></span> <button type="button" class="inline-btn" id="cloud-open">共享经验</button></span>
     </div>
     <div class="memory" id="memory-cards"></div>
   </section>
@@ -897,8 +930,9 @@ async function loadStats() {
           el("div", { class: "meter" }, el("i", { style: `width:${Math.round(100 * r.successes / r.tries)}%` })))));
     });
     $("memory-cards").replaceChildren(...cards);
+    const shared = data.shared ? ` + 共享 ${data.shared} 条` : "";
     $("memory-note").textContent = data.rows.length
-      ? `共 ${data.episodes} 次求解记录 · agent 靠这些挑方法、猜网格大小` : "还没有记录，解几道题就会有了";
+      ? `本机 ${data.episodes} 次求解${shared} · agent 靠这些挑方法、猜网格大小` : "还没有记录，解几道题就会有了";
   } catch (e) { $("memory-note").textContent = e.message; }
 }
 
@@ -1154,6 +1188,71 @@ function setupChat() {
   showChat(false);
 }
 
+/* shared experience */
+let cloud = null;
+
+function cloudMsg(kind, message) {
+  $("cloud-error").textContent = kind === "error" ? message : "";
+  $("cloud-error").classList.toggle("hidden", kind !== "error");
+  $("cloud-saved").textContent = kind === "saved" ? message : "";
+  $("cloud-saved").classList.toggle("hidden", kind !== "saved");
+}
+
+function when(iso) {
+  if (!iso) return "还没同步过";
+  const d = new Date(iso);
+  return isNaN(d) ? iso : d.toLocaleString("zh-CN", { hour12: false });
+}
+
+function showCloud() {
+  $("cloud-url").value = cloud.url;
+  $("cloud-token").value = "";
+  $("cloud-token").placeholder = cloud.token ? `已保存 ${cloud.token}，留空则不改` : "粘贴访问令牌";
+  $("cloud-enabled").checked = cloud.configured ? cloud.enabled : true;
+  $("cloud-forget").classList.toggle("hidden", !cloud.configured);
+  $("cloud-sync").classList.toggle("hidden", !cloud.configured);
+  const hub = cloud.hub ? ` · 经验中心共 ${cloud.hub.episodes} 条，${cloud.hub.contributors} 人贡献` : "";
+  $("cloud-state").textContent = cloud.configured
+    ? `本机 ${cloud.local} 次求解，已下载别人的 ${cloud.shared} 条${hub} · 上次同步：${when(cloud.last_sync)}`
+    : "还没有连接经验中心。";
+}
+
+async function openCloud() {
+  cloudMsg("", "");
+  try { cloud = await api("/api/cloud"); } catch (e) { $("memory-note").textContent = e.message; return; }
+  showCloud();
+  if (cloud.error) cloudMsg("error", cloud.error);
+  if (!$("cloud-dialog").open) $("cloud-dialog").showModal();
+}
+
+async function cloudCall(path, body, done) {
+  cloudMsg("", "");
+  for (const id of ["cloud-save", "cloud-sync"]) $(id).disabled = true;
+  try {
+    cloud = await api(path, body);
+    showCloud();
+    cloudMsg("saved", done(cloud));
+    loadStats();
+  } catch (e) {
+    try { cloud = await api("/api/cloud"); showCloud(); } catch { /* keep the form as it is */ }
+    cloudMsg("error", e.message);
+  } finally {
+    for (const id of ["cloud-save", "cloud-sync"]) $(id).disabled = false;
+  }
+}
+
+function setupCloud() {
+  $("cloud-open").addEventListener("click", openCloud);
+  $("cloud-close").addEventListener("click", () => $("cloud-dialog").close());
+  $("cloud-form").addEventListener("submit", (e) => {
+    e.preventDefault();
+    cloudCall("/api/cloud", { url: $("cloud-url").value.trim(), token: $("cloud-token").value.trim(), enabled: $("cloud-enabled").checked },
+      (c) => c.enabled && c.last_sync ? `已保存并同步：${when(c.last_sync)}` : "已保存。");
+  });
+  $("cloud-sync").addEventListener("click", () => cloudCall("/api/cloud/sync", {}, (c) => `同步完成：${when(c.last_sync)}`));
+  $("cloud-forget").addEventListener("click", () => cloudCall("/api/cloud", { clear: true }, () => "已断开经验中心，已下载的共享经验还会继续使用。"));
+}
+
 function setupNav() {
   const links = [...document.querySelectorAll(".nav a")];
   links.forEach((a) => a.addEventListener("click", () => links.forEach((o) => o.classList.toggle("current", o === a))));
@@ -1162,6 +1261,7 @@ function setupNav() {
 async function init() {
   setupNav();
   setupSettings();
+  setupCloud();
   try { await loadInfo(); } catch (e) { $("llm-text").textContent = e.message; return; }
   for (const eq of info.equations) $("kind").append(el("option", { value: eq.kind }, eq.kind));
   for (const ex of info.examples) $("preset").append(el("option", { value: ex.name }, `第 ${ex.level} 级 · ${ex.title}`));

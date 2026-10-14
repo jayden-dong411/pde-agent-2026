@@ -55,7 +55,8 @@ def test_page_and_info(serve, monkeypatch):
     base = serve()
     status, page = call(base + "/")
     assert status == 200 and "<title>PDE Agent</title>" in page and "/api/solve" in page
-    assert "http" not in page.replace("http://www.w3.org/2000/svg", "")  # no outside resources
+    for outside in ('src="http', "src='http", 'href="http', "url(http", "@import", "fetch(\"http", "fetch('http"):
+        assert outside not in page  # the page loads nothing from the internet
     status, info = call(base + "/api/info")
     assert status == 200
     assert info["llm"] == {"provider": "deepseek", "name": "DeepSeek", "key": "DEEPSEEK_API_KEY",

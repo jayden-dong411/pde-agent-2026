@@ -50,6 +50,9 @@ class Settings:
             "keys": {p: k for p, k in keys.items() if p in PROVIDERS and isinstance(k, str) and k}
             if isinstance(keys, dict) else {},
         }
+        cloud = data.get("cloud")
+        if isinstance(cloud, dict) and isinstance(cloud.get("url"), str) and isinstance(cloud.get("token"), str):
+            clean["cloud"] = {"url": cloud["url"], "token": cloud["token"], "enabled": bool(cloud.get("enabled"))}
         return clean
 
     @property
@@ -62,6 +65,27 @@ class Settings:
     def key(self, provider: str) -> str:
         return self.data.get("keys", {}).get(provider, "")
 
+    @property
+    def cloud(self) -> dict:
+        """``{"url", "token", "enabled"}`` for the experience hub, or ``{}``."""
+        return dict(self.data.get("cloud") or {})
+
+    def update_cloud(self, url: str, token: str = "", enabled: bool = True, clear: bool = False) -> None:
+        """Remember (or forget) the experience hub. Raises ValueError on bad input."""
+        data = {k: v for k, v in self.data.items()}
+        if clear:
+            data.pop("cloud", None)
+        else:
+            from .cloud import check_url
+
+            url = check_url(url)
+            token = token.strip() or (self.cloud.get("token", "") if self.cloud.get("url") == url else "")
+            if not _KEY.fullmatch(token):
+                raise ValueError("请填写经验中心的访问令牌")
+            data["cloud"] = {"url": url, "token": token, "enabled": bool(enabled)}
+        self._write(data)
+        self.data = data
+
     def update(self, provider: str, model: str = "", api_key: str = "", clear_key: bool = False) -> None:
         """Choose ``provider`` (and its model); store or forget its key. Raises ValueError on bad input."""
         if provider not in PROVIDERS:
@@ -72,7 +96,7 @@ class Settings:
         api_key = api_key.strip()
         if api_key and not _KEY.fullmatch(api_key):
             raise ValueError("API key 格式不对：应该是一串没有空格的字符")
-        data = {"provider": provider, "models": dict(self.data.get("models", {})),
+        data = {**self.data, "provider": provider, "models": dict(self.data.get("models", {})),
                 "keys": dict(self.data.get("keys", {}))}
         if model and model != DEFAULT_MODELS[provider]:
             data["models"][provider] = model

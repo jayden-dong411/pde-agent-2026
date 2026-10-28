@@ -53,7 +53,11 @@ class SolverSpec:
     the fraction of a decaying mode with wavenumber k that a run on an
     n-interval grid leaves behind at the final time (schemes that are not
     L-stable, like Crank-Nicolson, leave fast modes ringing); ``traits`` name
-    other weaknesses, so far ``dissipative`` (smears travelling waves).
+    other weaknesses, so far ``dissipative`` (smears travelling waves), or
+    properties, so far ``adaptive`` (``n`` sets a tolerance, not a grid).
+    ``stability`` is the step limit of an explicit ODE method: |lambda| dt
+    may not exceed it. ``accepts`` narrows which problems of its class the
+    method can take (Verlet only takes separable systems).
     """
 
     name: str
@@ -67,12 +71,15 @@ class SolverSpec:
     cost: CostFn | None = None
     damping: DampingFn | None = None
     traits: tuple[str, ...] = ()
+    stability: float | None = None
+    accepts: Callable[[PDEProblem], bool] | None = None
 
     def supports(self, problem: PDEProblem) -> bool:
         return (
             problem.kind == self.kind
             and problem.dim in self.dims
             and problem.boundary in self.boundaries
+            and (self.accepts is None or bool(self.accepts(problem)))
         )
 
     def run(self, problem: PDEProblem, n: int, options: dict | None = None) -> SolveResult:
@@ -81,7 +88,8 @@ class SolverSpec:
         result = self.solve(problem.for_solver(), int(n), dict(options or {}))
         result.runtime = time.perf_counter() - start
         result.method = self.name
-        expected = (int(n) + 1,) * problem.dim
+        # an ODE solver returns the state vector at the final time
+        expected = (int(n) + 1,) * problem.dim if problem.dim else (problem.size,)
         if np.shape(result.u) != expected:
             raise ValueError(f"{self.name} returned shape {np.shape(result.u)}, expected {expected}")
         if not np.all(np.isfinite(result.u)):

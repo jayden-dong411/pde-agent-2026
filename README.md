@@ -10,6 +10,7 @@
 | 热方程（1D，Dirichlet） | `u_t = α u_xx + f` | `heat.ftcs` 显式（2）、`heat.backward_euler`（1）、`heat.crank_nicolson`（2） |
 | 对流方程（1D，周期边界） | `u_t + c u_x = f` | `advection.upwind`（1）、`advection.lax_wendroff`（2） |
 | 波动方程（1D，Dirichlet） | `u_tt = c² u_xx + f` | `wave.leapfrog`（2） |
+| 常微分方程组（初值问题） | `y' = f(t, y)` | 显式：`ode.euler`（1）、`ode.heun`（2）、`ode.rk4`（4）、`ode.verlet`（2，辛方法）、`ode.rk45`（自适应）；隐式：`ode.backward_euler`（1）、`ode.trapezoid`（2）、`ode.bdf2`（2）、`ode.radau`、`ode.bdf`（自适应） |
 
 所有内置方法都用制造解（method of manufactured solutions）测过，实测收敛阶和标称一致。
 
@@ -25,7 +26,8 @@
    - 独立进程里的考试：先核对技能声明的方程和题目写的方程一致（技能自报的 `form` 也要和算子一致）；然后在 16、32、64 网格上解已知答案的制造解问题，考题是系统自带的两道，加上大模型出的最多两道，误差要足够小，收敛阶要达到声明的阶。
 
    没通过就把考试报告发回给大模型修改，最多 3 轮。入库的技能下次启动自动加载。考试规则变严以后，以前装的技能会在启动时按新规则重考一次，没通过的停用并说明原因；删掉技能 `.json` 里的 `"disabled"` 一项，下次启动会再考一次。
-5. **课程表**：从一维 Poisson 开始，依次是热方程、对流、波动、二维 Poisson，再到没有精确解、要自己估计误差的问题。最后是“前沿课程”：反应扩散方程、二维热方程、非线性 Burgers 方程，这些没有内置方法，要 agent 自己学。
+5. **ODE 课程（第 0、1 阶段）**：先练常微分方程。第 0 阶段是不刚性的题（指数衰减、Logistic、振子、Lotka–Volterra、Kepler），练“精度要求越高越该用高阶”；第 1 阶段是刚性题（λ 从 10 到 10⁶ 的线性刚性题、Robertson 化学反应、Van der Pol、热方程的方法线），练“认出刚性就用隐式方法”。求解前 agent 从 Jacobian 的特征值估刚性比，显式方法的稳定步数限制直接算进代价预测，所以刚性题上不会先去试显式方法。每个阶段另有参数没练过的期末考。ODE 方法的工作量按右端求值、Jacobian、LU 分解和线性求解的次数算，显式和隐式公平比较。
+6. **PDE 课程表**：从一维 Poisson 开始，依次是热方程、对流、波动、二维 Poisson，再到没有精确解、要自己估计误差的问题。最后是“前沿课程”：反应扩散方程、二维热方程、非线性 Burgers 方程，这些没有内置方法，要 agent 自己学。
 
 不接大模型，把课程表跑两轮的结果：
 
@@ -35,6 +37,18 @@
 ```
 
 第一轮没有任何经验，靠题目特征直接选了 Lax–Wendroff 和 Crank–Nicolson，不再先试一阶迎风格式（要 4096 个网格）和向后 Euler。v0.11.0 只靠经验时第一轮是求解 26 次、工作量 1.23e+07。第二轮用上经验，网格大小直接预测，求解次数再少四次。
+
+ODE 第 0、1 阶段跑两轮，再考期末：
+
+```
+pde-agent curriculum --ode --rounds 2
+第 1 轮：成功 14/14，共求解 30 次，工作量 1.91e+05
+第 2 轮：成功 14/14，共求解 24 次，工作量 1.12e+05
+pde-agent curriculum --exam
+第 1 轮：成功 7/7，共求解 8 次，工作量 1.33e+04      （没练过直接考：11 次，2.08e+04）
+```
+
+强刚性的题（刚性比 2000 以上）一个显式方法都没试，第一次就用隐式方法解出；中等刚性的题上显式方法只要几百步就稳定，agent 有时会探索它。
 
 ## 快速开始
 
@@ -49,6 +63,9 @@ pde-agent stats                    # 看学到的经验
 pde-agent bench                    # 在基准题上给各个方法和 agent 的选择打分
 pde-agent skills                   # 看已知的方程和方法
 pde-agent solve examples/heat_rod.json --tol 1e-4
+pde-agent curriculum --ode         # 常微分方程：第 0 阶段（不刚性）和第 1 阶段（刚性）
+pde-agent curriculum --exam        # 第 0、1 阶段的期末考
+pde-agent solve examples/stiff_ode.json   # 刚性的 Van der Pol 振子
 
 # 下面这些需要大模型（见“接入大模型”）
 pde-agent ask "在 [0,1] 上解 u_t = 0.01 u_xx，初值 sin(pi x)，两端为 0，算到 t = 1"
@@ -87,6 +104,7 @@ pde-agent app        # 打开 http://127.0.0.1:8765/
 pde-agent bench                                  # 全部基准题
 pde-agent bench --problem heat-stiff --tol 1e-4  # 只跑一道题，换个精度
 pde-agent bench --no-agent --json bench.json     # 只给方法打分，详细结果存成 JSON
+pde-agent bench --ode                            # 改用 ODE 第 0、1 阶段的 16 道题
 ```
 
 耗时是墙钟时间，换台机器会变，但同一台机器上方法之间的比较是可靠的。
@@ -139,6 +157,18 @@ print(report.summary())   # 方法、网格、误差、求解次数
 u = report.result.u       # 终止时刻的解，网格是 report.result.grid
 ```
 
+常微分方程组用 `ODEProblem`，未知量写成 `y1, y2, …`：
+
+```python
+from pde_agent import ODEProblem
+
+vdp = ODEProblem(rhs=["y2", "mu*(1 - y1**2)*y2 - y1"], initial=["2", "0"], t_final=100,
+                 coefficients={"mu": 1000})
+report = agent.solve(vdp, tol=1e-3)
+print(report.choice())    # 题目特征：刚性……按特征估计 ode.bdf 最省
+print(report.result.u)    # t_final 时刻的 [y1, y2]
+```
+
 接上大模型：
 
 ```python
@@ -153,8 +183,9 @@ report = agent.ask("求解反应扩散方程 u_t = 0.5 u_xx - 2u ……")
 ```
 src/pde_agent/
   problem.py      问题描述（JSON 可存），表达式安全解析
+  ode.py          常微分方程组题型，Jacobian，刚性比估计
   equations.py    已知方程的符号算子 L(u)，制造解，方程文字的解析和比对
-  solvers/        内置数值方法（统一的网格和结果格式）
+  solvers/        内置数值方法（统一的网格和结果格式；ode.py 是 ODE 方法）
   verify.py       误差、收敛阶、Richardson 估计，网格分辨率下限
   memory.py       经验记忆：方法排序、网格预测
   skills.py       技能库：静态检查、考试、安装和加载
@@ -219,6 +250,7 @@ DeepSeek 解析题目时使用 low 思考强度和 16,384 tokens 预算；写求
 - [x] 技能考试核对方程（v0.11.0）：技能声明的方程要和题目一致，系统自带的考题必考，旧技能按新规则重考
 - [ ] 评测：误判率，学习题和测试题分开，有经验和没经验的对比
 - [x] 按题目特征选方法和网格（v0.12.0）：分辨率、光滑度、刚性、传播距离，加上每个方法的代价模型
-- [ ] 从 ODE 到 PDE 的课程：先练非刚性和刚性 ODE
+- [x] 从 ODE 到 PDE 的课程第 0、1 阶段（v0.13.0）：非刚性和刚性 ODE，从刚性比选显式还是隐式
+- [ ] 课程第 2–4 阶段：抛物型、光滑双曲、有激波的双曲方程
 - [ ] 网页里的求解放进独立进程：硬超时、可以取消、能看进度
 - [ ] 更多能力：问答能调用求解，课程的后续阶段，PINN 作为一种技能

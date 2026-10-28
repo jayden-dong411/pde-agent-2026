@@ -1,0 +1,9 @@
+{
+  "name": "van-der-pol-stiff",
+  "kind": "ode",
+  "rhs": ["y2", "mu*(1 - y1**2)*y2 - y1"],
+  "initial": ["2", "0"],
+  "t_final": 100,
+  "coefficients": {"mu": 1000},
+  "description": "刚性的 Van der Pol 振子，没有精确解；agent 应该从刚性比看出要用隐式方法"
+}

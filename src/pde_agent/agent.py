@@ -39,8 +39,9 @@ from .solvers import builtin_registry
 from .solvers.base import SolveResult, SolverDiverged, SolverSpec
 from .verify import exact_error, relative_error, resolution_floor, restrict
 
-BASE_N = {1: 16, 2: 8, 3: 4}
-MAX_N = {1: 4096, 2: 256, 3: 64}
+# for ODEs (dim 0) n is the number of time steps, or sets the tolerance of an adaptive method
+BASE_N = {0: 16, 1: 16, 2: 8, 3: 4}
+MAX_N = {0: 2**20, 1: 4096, 2: 256, 3: 64}
 
 OUTCOMES = {
     "success": "达到精度",
@@ -166,7 +167,8 @@ class PDEAgent:
         time_order = eq.time_order if eq else int(problem.time_dependent)
         # an estimate's coarse companion is the first grid (BASE_N // 2), so it has to see the data too
         start = max(4, BASE_N[problem.dim] // 2) if report.error_kind == "estimated" else BASE_N[problem.dim]
-        floor = resolution_floor(problem, tol, time_order, start, MAX_N[problem.dim])
+        # an ODE has no grid data to resolve
+        floor = start if problem.dim == 0 else resolution_floor(problem, tol, time_order, start, MAX_N[problem.dim])
         if floor is None:
             report.message = f"题目数据在最细网格（n = {MAX_N[problem.dim]}）上也分辨不清，没有求解"
             self._remember(report)
@@ -174,7 +176,7 @@ class PDEAgent:
         report.min_n = floor
         report.features = extract(problem, floor)
         candidates = self.registry.for_problem(problem)
-        can_learn = learn and self.brain is not None
+        can_learn = learn and self.brain is not None and problem.dim > 0  # skills are written for grids
 
         if not candidates and can_learn:
             outcome = self.learn(problem, reason="no method covers this problem class yet")

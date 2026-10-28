@@ -37,7 +37,7 @@ def test_builtin_solvers_converge_at_their_order(spec, problem):
 
 def test_every_builtin_kind_has_a_solver():
     kinds = {spec.kind for spec in builtin_registry()}
-    assert kinds == {eq.kind for eq in builtin_equations()}
+    assert kinds == {eq.kind for eq in builtin_equations()} | {"ode"}  # ODE systems are not a PDE operator
 
 
 def test_ftcs_reports_instability_beyond_its_limit():

@@ -7,6 +7,11 @@ the agent learns, per problem class (``kind/dim/boundary``):
 * how fine a grid reached a given tolerance, to start near the right size
   instead of climbing up from a coarse grid every time.
 
+Each episode also records the problem's feature tags (``stiff``, ``rough``,
+``long``; see ``features.py``). Once the class has episodes with the same
+tags, only those count, so a stiff problem does not inherit what worked on
+gentle ones.
+
 Episodes shared by other people through an experience hub (see ``hub.py``)
 are kept in a second file and count the same as local ones.
 """
@@ -52,7 +57,9 @@ _ID = re.compile(r"[0-9a-f]{32}")
 _SIGNATURE = re.compile(r"[a-z][a-z0-9_]{0,40}/[1-3]d/[a-z][a-z0-9_]{0,20}")
 _NAME = re.compile(r"[A-Za-z0-9_.\-]{1,80}")
 _OUTCOMES = {"success", "unstable", "error", "stagnated", "max_n", "budget"}
+_TAG = re.compile(r"[a-z]{1,20}")
 MAX_TRIALS = 50
+EXPLORE_RATIO = 8.0  # an untried method is explored first only if predicted to cost at most this many times the cheapest
 MAX_PROBLEM_CHARS = 4000
 
 
@@ -122,6 +129,9 @@ def clean_episode(episode) -> dict:
     if problem is not None:
         if not isinstance(problem, dict) or len(json.dumps(problem, ensure_ascii=False)) > MAX_PROBLEM_CHARS:
             raise ValueError("bad problem")
+    tags = episode.get("tags", [])
+    if not isinstance(tags, list) or len(tags) > 8 or not all(isinstance(t, str) and _TAG.fullmatch(t) for t in tags):
+        raise ValueError("bad tags")
     time = episode.get("time")
     if time is not None and not (isinstance(time, str) and len(time) <= 40):
         raise ValueError("bad time")
@@ -140,6 +150,7 @@ def clean_episode(episode) -> dict:
         "work": _number(episode.get("work"), 0.0),
         "runtime": _number(episode.get("runtime"), 0.0),
         "methods": clean_trials,
+        "tags": sorted(set(tags)),
     }
 
 
@@ -192,11 +203,16 @@ class ExperienceStore:
                     fh.write(json.dumps(ep, ensure_ascii=False) + "\n")
         return len(new)
 
-    def stats(self, signature: str) -> dict[str, MethodStats]:
+    def stats(self, signature: str, tags: Iterable[str] | None = None) -> dict[str, MethodStats]:
+        """Per-method record for a problem class; with ``tags``, only episodes with
+        the same feature tags, when there are any (otherwise the whole class)."""
+        episodes = [ep for ep in self.episodes + self.shared if ep.get("signature") == signature]
+        if tags is not None:
+            wanted = sorted(set(tags))
+            same = [ep for ep in episodes if sorted(set(ep.get("tags") or [])) == wanted]
+            episodes = same or episodes
         table: dict[str, MethodStats] = {}
-        for ep in self.episodes + self.shared:
-            if ep.get("signature") != signature:
-                continue
+        for ep in episodes:
             for trial in ep.get("methods", []):
                 st = table.setdefault(trial["method"], MethodStats(trial["method"]))
                 st.tries += 1
@@ -206,34 +222,46 @@ class ExperienceStore:
                     st.grids.append((float(ep.get("tol", 0.0)), int(trial["n"]), trial.get("error_kind", "exact")))
         return table
 
-    def rank(self, signature: str, candidates: Iterable[SolverSpec], explore: bool = True) -> list[SolverSpec]:
+    def rank(self, signature: str, candidates: Iterable[SolverSpec], explore: bool = True,
+             predicted: dict[str, float] | None = None, tags: Iterable[str] | None = None) -> list[SolverSpec]:
         """Order methods by learned reliability, then by work to succeed.
 
-        With ``explore`` an untried method goes first (optimism in the face of
-        uncertainty), so every method gets a fair trial once per problem class.
+        ``predicted`` is the work each method is expected to need on this very
+        problem (from its features); it breaks ties instead of the class-wide
+        average, and orders untried methods. With ``explore`` an untried
+        method goes first (optimism in the face of uncertainty) unless its
+        predicted work is more than EXPLORE_RATIO times the cheapest prediction.
         """
-        stats = self.stats(signature)
+        stats = self.stats(signature, tags)
         candidates = list(candidates)
+        predicted = {k: v for k, v in (predicted or {}).items() if v is not None}
+        cheapest = min((predicted.get(s.name, math.inf) for s in candidates), default=math.inf)
+
+        def plausible(spec):
+            work = predicted.get(spec.name)
+            return work is None or not math.isfinite(cheapest) or work <= EXPLORE_RATIO * cheapest
 
         def key(item):
             index, spec = item
             st = stats.get(spec.name)
+            work = predicted.get(spec.name, math.inf)
             if st is None:
-                # untried: optimistic when exploring, otherwise after known-good methods
-                return (0 if explore else 1, 0.0, -spec.order, 0.0, index)
+                # untried: optimistic when exploring and plausible, otherwise after known-good methods
+                return (0 if explore and plausible(spec) else 1, 0.0, work, -spec.order, index)
             band = round(st.success_rate, 1)
-            return (1 if explore else 0, -band, 0.0, st.mean_work, index)
+            return (1 if explore else 0, -band, work if spec.name in predicted else st.mean_work, 0.0, index)
 
         return [spec for _, spec in sorted(enumerate(candidates), key=key)]
 
-    def suggest_n(self, signature: str, spec: SolverSpec, tol: float, error_kind: str) -> int | None:
+    def suggest_n(self, signature: str, spec: SolverSpec, tol: float, error_kind: str,
+                  tags: Iterable[str] | None = None) -> int | None:
         """Grid size predicted to reach ``tol`` from past successes, if any.
 
         Each success at (tol_i, n_i) predicts n_i * (tol_i / tol)^(1/order);
         the largest prediction among recent successes is used, rounded up to
         a power of two so grids stay nested for error estimation.
         """
-        st = self.stats(signature).get(spec.name)
+        st = self.stats(signature, tags).get(spec.name)
         if not st or not st.grids:
             return None
         order = max(spec.order, 0.5)

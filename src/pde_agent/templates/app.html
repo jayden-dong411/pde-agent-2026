@@ -811,6 +811,13 @@ function showReport(r) {
           el("b", {}, `${t.method}：${t.label}`),
           el("span", { class: "mono" }, `n = ${t.n ?? "-"} · 误差 ${fmt(t.error)} · 工作量 ${fmt(t.work)}`))));
   });
+  if (r.choice) {
+    steps.unshift(el("li", {},
+      el("span", { class: "num ok" }, "◆"),
+      el("div", { class: "step-body" },
+        el("div", { class: "step-line" }, el("b", {}, "按题目特征排方法")),
+        el("div", { class: "step-note" }, r.choice))));
+  }
   for (const o of r.learned) {
     steps.push(el("li", {},
       el("span", { class: "num " + (o.success ? "ok" : "bad") }, "★"),

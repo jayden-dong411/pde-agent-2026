@@ -32,23 +32,27 @@ def test_experience_predicts_grid_size(tmp_path):
     first = agent.solve(heat_problem(), tol=1e-4)
     second = agent.solve(heat_problem(), tol=1e-4)
     assert first.success and second.success
-    assert second.solver_runs == 1 < first.solver_runs
+    # features already land the first try near the right grid; experience keeps it there
+    assert second.solver_runs == 1 and second.n <= first.n
 
 
-def test_exploration_then_exploitation_picks_cheapest_reliable_method(tmp_path):
+def test_features_pick_the_cheapest_method_and_experience_keeps_it(tmp_path):
     agent = PDEAgent(home=tmp_path)
-    chosen = [agent.solve(heat_problem(f"heat-{i}"), tol=1e-4).method for i in range(3)]
-    assert sorted(chosen) == ["heat.backward_euler", "heat.crank_nicolson", "heat.ftcs"]
-    assert agent.solve(heat_problem(), tol=1e-4).method == "heat.crank_nicolson"
+    first = agent.solve(heat_problem("heat-0"), tol=1e-4)
+    # explicit steps cost alpha/h^2 and backward Euler is first order: both predicted far dearer, so not explored first
+    assert first.method == "heat.crank_nicolson" and first.solver_runs == 1
+    assert first.predictions["heat.ftcs"].work > 8 * first.predictions["heat.crank_nicolson"].work
     # the lesson survives a restart because experience is stored on disk
-    fresh = PDEAgent(home=tmp_path)
-    report = fresh.solve(heat_problem(), tol=1e-4)
+    report = PDEAgent(home=tmp_path).solve(heat_problem(), tol=1e-4)
     assert report.method == "heat.crank_nicolson" and report.solver_runs == 1
 
 
 def test_unstable_method_is_abandoned_and_remembered(tmp_path):
+    # with a tiny alpha explicit steps are cheap, so features put FTCS first
+    problem = manufactured_problem(builtin_equations().get("heat"), "sin(pi*x)*exp(-t) + x*t", [(0, 1)], 0.5,
+                                   {"alpha": 0.001}, name="slow-heat")
     agent = PDEAgent(home=tmp_path)
-    report = agent.solve(heat_problem(), tol=1e-3, options={"r": 0.7})
+    report = agent.solve(problem, tol=1e-3, options={"r": 0.7})
     assert report.success
     assert report.trials[0] == {**report.trials[0], "method": "heat.ftcs", "outcome": "unstable"}
     stats = agent.memory.stats("heat/1d/dirichlet")
@@ -80,7 +84,7 @@ def test_aliased_data_is_solved_from_the_floor_up(tmp_path, exact):
     report = PDEAgent(home=tmp_path).solve(PDEProblem(**R3, initial="sin(32*pi*x)", exact=exact), tol=1e-3)
     assert report.min_n == 128
     assert report.success and report.n >= 128
-    assert min(a.n for a in report.attempts) == 128
+    assert min(a.n for a in report.attempts) >= 128
 
 
 class NoLearning:
@@ -100,4 +104,5 @@ def test_unresolvable_data_is_reported_not_solved(tmp_path):
 def test_smooth_estimated_problems_keep_their_coarse_companion(tmp_path, name):
     lesson = next(item for item in basic_curriculum() if item.name == name)
     report = PDEAgent(home=tmp_path).solve(lesson.problem, lesson.tol)
-    assert report.min_n == 8 and report.attempts[0].n == 8
+    # the first grid is the feature prediction's coarse companion, never below the floor
+    assert report.min_n == 8 and report.attempts[0].n == max(8, report.predictions[report.method].start // 2)

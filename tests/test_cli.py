@@ -24,7 +24,8 @@ def test_solve_problem_file(tmp_path, capsys):
     path = tmp_path / "rod.json"
     path.write_text(json.dumps(problem), encoding="utf-8")
     assert main(["--home", str(tmp_path / "home"), "solve", str(path), "--tol", "1e-4"]) == 0
-    assert "rod：成功" in capsys.readouterr().out
+    out = capsys.readouterr().out
+    assert "rod：成功" in out and "题目特征：" in out and "最省" in out
 
 
 def test_deepseek_without_a_key_is_a_clear_error(tmp_path, monkeypatch, capsys):

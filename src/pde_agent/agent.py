@@ -2,14 +2,18 @@
 
 One call to ``solve`` is an episode:
 
-1. rank the methods that can handle the problem using past experience,
-2. solve on a grid predicted from experience (or a coarse default), but never
+1. read the problem's features (resolution floor, smoothness, stiffness,
+   travel distance; see ``features.py``) and predict, per method, the grid
+   and the work needed for the tolerance,
+2. rank the methods by past experience with problems of the same class and
+   feature tags, cheapest prediction first among equals,
+3. solve on a grid predicted from experience (or from the features), but never
    below the resolution floor, the first grid that resolves the problem's data
    (a problem no grid resolves is reported, not solved),
-3. measure the error (exact solution) or estimate it (grid refinement),
-4. refine until the tolerance is met, or move to the next method when a
+4. measure the error (exact solution) or estimate it (grid refinement),
+5. refine until the tolerance is met, or move to the next method when a
    method blows up, stagnates or runs out of budget,
-5. append the whole episode to the experience memory.
+6. append the whole episode to the experience memory.
 
 When no method fits, or all of them fail, and a language model is attached
 (``ClaudeBrain`` or ``DeepSeekBrain``), the agent asks it for a new solver,
@@ -26,6 +30,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from .equations import builtin_equations, operator_from_text
+from .features import Prediction, ProblemFeatures, extract, predict
 from .llm import LLMError
 from .memory import ExperienceStore
 from .problem import PDEProblem
@@ -86,6 +91,8 @@ class SolveReport:
     learned: list[LearnOutcome] = field(default_factory=list)
     message: str = ""
     min_n: int = 0  # resolution floor: the first grid that resolves the problem's data (0 if no grid does)
+    features: ProblemFeatures | None = None
+    predictions: dict[str, Prediction] = field(default_factory=dict)
 
     @property
     def solver_runs(self) -> int:
@@ -98,6 +105,20 @@ class SolveReport:
     @property
     def runtime(self) -> float:
         return sum(a.runtime for a in self.attempts)
+
+    def choice(self) -> str:
+        """Why the methods were tried in this order: the problem's features and the cheapest prediction."""
+        if self.features is None:
+            return ""
+        text = f"题目特征：{self.features.describe()}"
+        ranked = sorted((p for p in self.predictions.values() if p.work is not None), key=lambda p: p.work)
+        if ranked:
+            best = ranked[0]
+            text += f"。按特征估计 {best.method} 最省（n ≈ {best.n}，工作量约 {best.work:.2g}）"
+            notes = [f"{p.method}：{'；'.join(p.notes)}" for p in self.predictions.values() if p.notes]
+            if notes:
+                text += "。" + "；".join(notes)
+        return text
 
     def summary(self) -> str:
         name = self.problem.name or self.problem.signature()
@@ -151,6 +172,7 @@ class PDEAgent:
             self._remember(report)
             return report
         report.min_n = floor
+        report.features = extract(problem, floor)
         candidates = self.registry.for_problem(problem)
         can_learn = learn and self.brain is not None
 
@@ -219,7 +241,13 @@ class PDEAgent:
     def _run_methods(self, report: SolveReport, candidates: list[SolverSpec], options: dict | None) -> None:
         deadline = time.monotonic() + self.time_budget
         report.message = ""
-        for spec in self.memory.rank(report.problem.signature(), candidates, self.explore):
+        if report.features is not None:
+            for spec in candidates:
+                report.predictions[spec.name] = predict(
+                    spec, report.problem, report.features, report.tol, MAX_N[report.problem.dim])
+        tags = report.features.tags if report.features else None
+        predicted = {name: p.work for name, p in report.predictions.items()}
+        for spec in self.memory.rank(report.problem.signature(), candidates, self.explore, predicted, tags):
             if time.monotonic() > deadline:
                 break
             outcome, n, error, work = self._try_method(spec, report, options, deadline)
@@ -236,7 +264,10 @@ class PDEAgent:
         problem, tol = report.problem, report.tol
         estimated = report.error_kind == "estimated"
         max_n = MAX_N[problem.dim]
-        n = self.memory.suggest_n(problem.signature(), spec, tol, report.error_kind) or BASE_N[problem.dim]
+        tags = report.features.tags if report.features else None
+        prediction = report.predictions.get(spec.name)
+        n = (self.memory.suggest_n(problem.signature(), spec, tol, report.error_kind, tags)
+             or (prediction.start if prediction else BASE_N[problem.dim]))
         if estimated:
             n //= 2  # the estimate needs a coarser companion solution
         n = min(max(4, report.min_n, n), max_n // 2 if estimated else max_n)
@@ -291,7 +322,8 @@ class PDEAgent:
         if error is None or not math.isfinite(error) or error <= 0:
             return 2 * n
         factor = 1.1 * (error / tol) ** (1.0 / max(order, 0.5))
-        return n * 2 ** min(3, max(1, math.ceil(math.log2(factor))))
+        # a factor just past a power of two (within 7%) rounds down: the 1.1 margin already covers it
+        return n * 2 ** min(3, max(1, math.ceil(math.log2(factor) - 0.1)))
 
     def _remember(self, report: SolveReport) -> None:
         self.memory.add({
@@ -309,4 +341,6 @@ class PDEAgent:
             "runtime": round(report.runtime, 4),
             "methods": report.trials,
             "learned": [o.solver for o in report.learned if o.success],
+            "tags": list(report.features.tags) if report.features else [],
+            "features": report.features.to_dict() if report.features else None,
         })

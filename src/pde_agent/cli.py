@@ -68,6 +68,8 @@ def cmd_solve(args) -> int:
     data = json.loads(Path(args.problem).read_text(encoding="utf-8"))
     agent = _agent(args)
     report = agent.solve(PDEProblem.from_dict(data), args.tol, learn=agent.brain is not None)
+    if report.choice():
+        print(report.choice())
     print(report.summary())
     return 0 if report.success else 1
 

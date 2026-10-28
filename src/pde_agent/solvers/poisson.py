@@ -46,6 +46,10 @@ def solve_fd(problem: PDEProblem, n: int, options: dict) -> SolveResult:
     return SolveResult(u=u, grid=axes, n=n, work=float(m**problem.dim), info={"unknowns": m**problem.dim})
 
 
+def cost(problem: PDEProblem, n: int) -> float:
+    return float((n - 1) ** problem.dim)
+
+
 SOLVERS = (
     SolverSpec(
         name="poisson.fd2",
@@ -54,6 +58,7 @@ SOLVERS = (
         boundaries=("dirichlet",),
         order=2.0,
         solve=solve_fd,
+        cost=cost,
         description="Second-order central differences, sparse direct solve",
     ),
 )

@@ -46,8 +46,12 @@ def _names(text: str) -> set[str]:
     return {tok.string for tok in tokens if tok.type == tokenize.NAME}
 
 
-def parse_expr(text: str, coefficients: dict[str, float] | None = None) -> sp.Expr:
-    """Parse an expression in x, y, t; coefficient names are substituted."""
+def parse_expr(text: str, coefficients: dict[str, float] | None = None,
+               variables: dict[str, sp.Symbol] | None = None) -> sp.Expr:
+    """Parse an expression in x, y, t; coefficient names are substituted.
+
+    ``variables`` adds more symbols by name (the unknowns ``y1, y2, ...`` of an ODE).
+    """
     if not isinstance(text, str) or not text.strip():
         raise ValueError(f"empty expression: {text!r}")
     # sympify drops newlines, which would glue checked names (l, e, n) into an unchecked one (len)
@@ -55,19 +59,21 @@ def parse_expr(text: str, coefficients: dict[str, float] | None = None) -> sp.Ex
     if not _SAFE_CHARS.match(text):
         raise ValueError(f"unsupported characters in expression: {text!r}")
     coefficients = coefficients or {}
-    unknown = _names(text) - _FUNCTIONS - set(_CONSTANTS) - set(coefficients)
+    variables = variables or {}
+    unknown = _names(text) - _FUNCTIONS - set(_CONSTANTS) - set(coefficients) - set(variables)
     if unknown:
         raise ValueError(f"unknown names in {text!r}: {', '.join(sorted(unknown))}")
     local: dict[str, Any] = dict(_CONSTANTS)
     for name, value in coefficients.items():
         local[name] = sp.Float(value)
+    local.update(variables)
     try:
         expr = sp.sympify(text, locals=local, convert_xor=True)
     except (sp.SympifyError, SyntaxError, TypeError) as exc:
         raise ValueError(f"cannot parse expression {text!r}: {exc}") from exc
     if not isinstance(expr, sp.Expr):
         raise ValueError(f"not a scalar expression: {text!r}")
-    unknown = expr.free_symbols - {X, Y, T}
+    unknown = expr.free_symbols - {X, Y, T} - set(variables.values())
     if unknown:
         names = ", ".join(sorted(str(s) for s in unknown))
         raise ValueError(f"unknown symbols in {text!r}: {names}")

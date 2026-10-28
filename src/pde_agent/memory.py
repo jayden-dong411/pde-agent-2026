@@ -54,7 +54,7 @@ class MethodStats:
 
 
 _ID = re.compile(r"[0-9a-f]{32}")
-_SIGNATURE = re.compile(r"[a-z][a-z0-9_]{0,40}/[1-3]d/[a-z][a-z0-9_]{0,20}")
+_SIGNATURE = re.compile(r"[a-z][a-z0-9_]{0,40}/[0-3]d/[a-z][a-z0-9_]{0,20}")
 _NAME = re.compile(r"[A-Za-z0-9_.\-]{1,80}")
 _OUTCOMES = {"success", "unstable", "error", "stagnated", "max_n", "budget"}
 _TAG = re.compile(r"[a-z]{1,20}")

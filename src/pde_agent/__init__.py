@@ -2,8 +2,9 @@
 
 from .agent import PDEAgent, SolveReport
 from .equations import Equation, builtin_equations, manufactured_problem
+from .ode import ODEProblem
 from .problem import PDEProblem
 
-__version__ = "0.12.0"
+__version__ = "0.13.0"
 
-__all__ = ["Equation", "PDEAgent", "PDEProblem", "SolveReport", "builtin_equations", "manufactured_problem"]
+__all__ = ["Equation", "ODEProblem", "PDEAgent", "PDEProblem", "SolveReport", "builtin_equations", "manufactured_problem"]

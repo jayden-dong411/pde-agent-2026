@@ -10,6 +10,13 @@ problem in front of the agent:
   initial data decays than the time span (``alpha * T * k_max^2``),
 * ``travel``: for waves and transport, how many domain lengths a signal crosses.
 
+ODE systems (``dim`` 0, see ``ode.py``) have no grid data. Their features
+come from the Jacobian: ``stiffness`` is the time span times how much faster
+the fastest mode decays than anything grows, ``wavenumber`` holds the
+largest |eigenvalue| (the step limit of explicit methods) and ``scale`` how
+many oscillations or growth times the span holds (fixed-step methods need
+proportionally more steps).
+
 From these and each method's traits and cost model the agent predicts, per
 method, the grid that reaches the tolerance and the work to get there. The
 cheapest prediction is tried first; experience still decides which methods
@@ -46,12 +53,23 @@ class ProblemFeatures:
     wavenumber: float = 0.0  # finest wavenumber in the initial data
     travel: float = 0.0
     tags: tuple[str, ...] = ()
+    ode: bool = False
+    scale: float = 1.0  # ODE: oscillations or growth times in the time span (at least 1)
 
     def to_dict(self) -> dict:
-        return {"floor": self.floor, "smooth": self.smooth, "stiffness": round(self.stiffness, 3),
+        data = {"floor": self.floor, "smooth": self.smooth, "stiffness": round(self.stiffness, 3),
                 "travel": round(self.travel, 3), "tags": list(self.tags)}
+        if self.ode:
+            data.update(ode=True, scale=round(self.scale, 3), rate=round(self.wavenumber, 3))
+        return data
 
     def describe(self) -> str:
+        if self.ode:
+            if "stiff" in self.tags:
+                text = f"刚性（最快的模态比时间跨度快 {self.stiffness:.3g} 倍衰减，显式方法会被稳定性卡住）"
+            else:
+                text = f"不刚性（刚性比 {self.stiffness:.3g}）"
+            return text + (f"；时间跨度内约有 {self.scale:.1f} 个振荡周期或增长时间" if self.scale > 1 else "")
         parts = [f"数据要 n ≥ {self.floor} 才看得清"]
         if not self.smooth:
             parts.append("数据不光滑（高阶方法只剩一阶）")
@@ -85,7 +103,17 @@ def _finest_wavenumber(problem: PDEProblem) -> float:
     return 2 * math.pi * (n / 8) / length
 
 
+def _extract_ode(problem, floor: int) -> ProblemFeatures:
+    spectrum = problem.spectrum()
+    feats = ProblemFeatures(floor=floor, ode=True, stiffness=problem.stiffness(), wavenumber=spectrum["rho"])
+    feats.scale = max(1.0, spectrum["rate"] * problem.t_final / (2 * math.pi))
+    feats.tags = ("stiff",) if feats.stiffness > STIFF else ()
+    return feats
+
+
 def extract(problem: PDEProblem, floor: int) -> ProblemFeatures:
+    if problem.dim == 0:
+        return _extract_ode(problem, floor)
     feats = ProblemFeatures(floor=floor)
     names = set()
     for name in ("initial", "initial_velocity", "source", "boundary_value", "exact"):
@@ -120,17 +148,28 @@ def predict(spec: SolverSpec, problem: PDEProblem, feats: ProblemFeatures, tol: 
         order, notes = 1.0, notes + ["数据不光滑，按一阶估计"]
     if "long" in feats.tags and "dissipative" in spec.traits:
         order, notes = 0.5, notes + ["长时间传播，耗散会累积，按半阶估计"]
+    floor = feats.floor
+    if feats.scale > 1 and "adaptive" not in spec.traits:  # more oscillations need proportionally more steps
+        floor = min(max_n, floor * 2 ** math.ceil(math.log2(feats.scale) - 1e-9))
     floor_error = FLOOR_RESOLUTION**order * max(1.0, feats.travel)
     factor = max(1.0, floor_error / tol) ** (1.0 / order)
-    n = min(max_n, feats.floor * 2 ** max(0, math.ceil(math.log2(factor) - 1e-9)))
+    n = min(max_n, floor * 2 ** max(0, math.ceil(math.log2(factor) - 1e-9)))
     # the guess of the error on the floor is rough: start one grid coarser and let measured errors size the rest
-    start = max(feats.floor, n // 2)
+    start = max(floor, n // 2)
+    if spec.stability and feats.ode and feats.wavenumber > 0:
+        need = feats.wavenumber * problem.t_final / spec.stability
+        if need > n:  # an explicit method below this many steps blows up: stability, not accuracy, decides
+            stable = 2 ** math.ceil(math.log2(need) - 1e-9)
+            notes.append(f"稳定性限制：显式方法至少要 {math.ceil(need)} 步")
+            if stable > max_n:
+                return Prediction(spec.name, max_n, max_n, math.inf, order, notes)
+            n = start = stable
     if "stiff" in feats.tags and spec.damping is not None:
         accurate = n
         while n < max_n and spec.damping(problem, n, feats.wavenumber) > tol:
             n *= 2
         if n > accurate:
             start = n  # below it the fast modes ring; that is not an estimate
-            notes.append(f"刚性：初值里的高频要 n ≥ {n} 才衰减干净")
+            notes.append(f"刚性：最快的模态要 n ≥ {n} 步才衰减干净" if feats.ode else f"刚性：初值里的高频要 n ≥ {n} 才衰减干净")
     work = spec.cost(problem, n) if spec.cost else None
     return Prediction(spec.name, n, start, work, order, notes)

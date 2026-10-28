@@ -26,6 +26,8 @@ def relative_error(u: np.ndarray, reference: np.ndarray) -> float:
 
 
 def exact_values(problem: PDEProblem, result: SolveResult) -> np.ndarray:
+    if problem.dim == 0:  # an ODE: the state vector at the final time
+        return problem.exact_at(problem.t_final)
     return evaluate(problem.fn("exact"), mesh(result.grid), problem.t_final or 0.0)
 
 
@@ -37,6 +39,8 @@ def exact_error(problem: PDEProblem, result: SolveResult) -> float | None:
 
 def restrict(fine: SolveResult, n: int) -> np.ndarray:
     """Values of a fine-grid solution at the nodes of a nested coarse grid."""
+    if not fine.grid:  # an ODE state at the final time: nothing to restrict
+        return fine.u
     ratio, rem = divmod(fine.n, n)
     if rem or ratio < 1:
         raise ValueError(f"grid with n={n} is not nested in n={fine.n}")

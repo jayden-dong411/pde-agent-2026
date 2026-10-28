@@ -10,9 +10,9 @@ from pathlib import Path
 
 from . import __version__
 from .agent import PDEAgent, default_home
-from .curriculum import basic_curriculum, frontier_lessons, run_curriculum
+from .curriculum import basic_curriculum, frontier_lessons, ode_curriculum, ode_exam, run_curriculum
 from .llm import PROVIDERS, LLMError, default_provider
-from .problem import PDEProblem
+from .ode import problem_from_dict
 from .settings import Settings
 
 
@@ -41,8 +41,13 @@ def _fmt(value, spec=".2e") -> str:
 
 def cmd_curriculum(args) -> int:
     agent = _agent(args)
-    lessons = basic_curriculum() + (frontier_lessons() if args.frontier else [])
-    if args.level:
+    if args.exam:
+        lessons = ode_exam()
+    elif args.ode:
+        lessons = ode_curriculum()
+    else:
+        lessons = basic_curriculum() + (frontier_lessons() if args.frontier else [])
+    if args.level is not None:
         lessons = [lesson for lesson in lessons if lesson.level <= args.level]
     print(f"{'轮':>2} {'课程':<24} {'结果':<4} {'方法':<26} {'n':>5} {'误差':>9} {'求解次数':>6} {'工作量':>10}")
     totals: dict[int, list[float]] = {}
@@ -52,6 +57,8 @@ def cmd_curriculum(args) -> int:
               f"{_fmt(report.error):>9} {report.solver_runs:>8} {report.work:>12.3g}")
         if not report.success:
             print(f"   └ {report.message}")
+        elif lesson.problem.dim == 0 and report.features is not None:
+            print(f"   └ {report.features.describe()}")
         for outcome in report.learned:
             status = f"学会了 {outcome.solver}" if outcome.success else f"学习失败：{outcome.message}"
             print(f"   └ {status}（{outcome.rounds} 轮）")
@@ -67,7 +74,7 @@ def cmd_curriculum(args) -> int:
 def cmd_solve(args) -> int:
     data = json.loads(Path(args.problem).read_text(encoding="utf-8"))
     agent = _agent(args)
-    report = agent.solve(PDEProblem.from_dict(data), args.tol, learn=agent.brain is not None)
+    report = agent.solve(problem_from_dict(data), args.tol, learn=agent.brain is not None)
     if report.choice():
         print(report.choice())
     print(report.summary())
@@ -91,7 +98,7 @@ def cmd_learn(args) -> int:
     args.learn = True
     data = json.loads(Path(args.problem).read_text(encoding="utf-8"))
     agent = _agent(args)
-    problem = agent.equations.complete(PDEProblem.from_dict(data))
+    problem = agent.equations.complete(problem_from_dict(data))
     outcome = agent.learn(problem, reason=args.reason or "user asked for a new method")
     if outcome.success:
         print(f"学会了 {outcome.solver}（{outcome.rounds} 轮）：{outcome.message}")
@@ -103,9 +110,9 @@ def cmd_learn(args) -> int:
 
 
 def cmd_bench(args) -> int:
-    from .benchmark import reference_problems, run_benchmark
+    from .benchmark import ode_reference_problems, reference_problems, run_benchmark
 
-    problems = reference_problems()
+    problems = ode_reference_problems() if args.ode else reference_problems()
     if args.problem:
         unknown = set(args.problem) - {b.name for b in problems}
         if unknown:
@@ -267,6 +274,8 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--rounds", type=int, default=1)
     p.add_argument("--level", type=int, help="只做到这一级")
     p.add_argument("--frontier", action="store_true", help="包含需要学习新方法的课程")
+    p.add_argument("--ode", action="store_true", help="常微分方程课程：第 0 阶段（不刚性）和第 1 阶段（刚性）")
+    p.add_argument("--exam", action="store_true", help="常微分方程第 0、1 阶段的期末考（没练过的参数）")
     p.add_argument("--learn", "--claude", action="store_true", help="允许请大模型学习新方法")
     p.set_defaults(func=cmd_curriculum)
 
@@ -292,6 +301,7 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--tol", type=float, help="统一的精度要求（默认每道题自己的，一般是 1e-3）")
     p.add_argument("--budget", type=float, default=20.0, help="每个方法在每道题上最多用多少秒（默认 20）")
     p.add_argument("--no-agent", action="store_true", help="只给方法打分，不跑 agent")
+    p.add_argument("--ode", action="store_true", help="改用常微分方程第 0、1 阶段的基准题")
     p.add_argument("--json", help="把详细结果写到这个 JSON 文件")
     p.set_defaults(func=cmd_bench)
 

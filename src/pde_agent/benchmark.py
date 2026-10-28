@@ -22,8 +22,8 @@ from .problem import PDEProblem
 from .solvers.base import SolverDiverged, SolverRegistry
 from .verify import exact_error, resolution_floor
 
-BASE_N = {1: 16, 2: 8, 3: 4}
-MAX_N = {1: 4096, 2: 256, 3: 64}
+BASE_N = {0: 16, 1: 16, 2: 8, 3: 4}
+MAX_N = {0: 2**20, 1: 4096, 2: 256, 3: 64}
 
 # Viscous Burgers has no built-in method; its operator is here so the tests
 # can check the reference solution, and a learned skill can be benchmarked.
@@ -72,6 +72,14 @@ def reference_problems() -> list[BenchProblem]:
                      p("burgers-cole-hopf", "burgers",
                        "2*pi*nu*exp(-pi**2*nu*t)*sin(pi*x)/(2 + exp(-pi**2*nu*t)*cos(pi*x))", 1.0, {"nu": 0.05})),
     ]
+
+
+def ode_reference_problems() -> list[BenchProblem]:
+    """The ODE stages' problems with exact solutions (``pde-agent bench --ode``)."""
+    from .curriculum import ode_curriculum, ode_exam
+
+    return [BenchProblem(lesson.name, lesson.title, lesson.problem, lesson.tol)
+            for lesson in ode_curriculum() + ode_exam() if lesson.problem.has_exact()]
 
 
 def equation_for(kind: str) -> Equation | None:
@@ -180,7 +188,7 @@ def score_method(spec, bench: BenchProblem, time_budget: float = 20.0, repeat: i
     eq = equation_for(problem.kind)
     time_order = eq.time_order if eq else int(problem.time_dependent)
     max_n = MAX_N[problem.dim]
-    n = resolution_floor(problem, bench.tol, time_order, BASE_N[problem.dim], max_n)
+    n = BASE_N[0] if problem.dim == 0 else resolution_floor(problem, bench.tol, time_order, BASE_N[problem.dim], max_n)
     if n is None:  # no grid up to max_n resolves the data, so there is nothing a run could be scored on
         return score
     deadline = time.monotonic() + time_budget

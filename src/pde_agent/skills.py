@@ -31,7 +31,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from types import ModuleType
 
-from .equations import Equation, EquationBook, builtin_equations, manufactured_problem
+from .equations import Equation, EquationBook, builtin_equations, check_operator, manufactured_problem
 from .problem import BOUNDARY_KINDS, PDEProblem, parse_expr
 from .solvers.base import SolverRegistry, SolverSpec
 from .verify import convergence_study
@@ -49,6 +49,7 @@ FORBIDDEN_ATTRIBUTES = {
 }
 
 STUDY_GRIDS = {1: [16, 32, 64], 2: [8, 16, 32], 3: [4, 8, 16]}
+EXAM_VERSION = 2  # raise when the exam gets stricter: installed skills with an older version are examined again
 MAX_FINAL_ERROR = 5e-2
 _SOLVER_NAME = re.compile(r"[a-z][a-z0-9_]*\.[a-z][a-z0-9_]*")
 
@@ -91,7 +92,7 @@ class SkillTask:
             kind=problem.kind,
             dim=problem.dim,
             boundary=problem.boundary,
-            equation=eq.form if eq else problem.equation,
+            equation=eq.form if eq and eq.origin == "builtin" else problem.equation or (eq.form if eq else ""),
             coefficients={**(eq.defaults if eq else {}), **problem.coefficients},
             domain=[tuple(d) for d in problem.domain],
             t_final=problem.t_final,
@@ -309,8 +310,20 @@ def run_exam(module: ModuleType, task: SkillTask | None, test_solutions: list[st
     domain = task.domain if task else [(0.0, 1.0)] * dim
     t_final = (task.t_final if task and task.t_final else 0.5) if eq.time_order else None
     coefficients = task.coefficients if task else {}
+    if equation is not None:  # a new equation must be the one the task states, and its form must say what it does
+        if task is None or not task.equation.strip():
+            report.message = "the task gives no equation text to check EQUATION against"
+            return report
+        why = check_operator(equation, task.equation, coefficients, dim, domain, t_final)
+        if why:
+            report.message = f"operator does not match the task equation: {why}"
+            return report
+        why = check_operator(equation, equation.form, coefficients, dim, domain, t_final)
+        if why:
+            report.message = f"EQUATION form does not match operator: {why}"
+            return report
     exacts = []
-    for text in list(test_solutions)[:3] + default_test_solutions(eq.time_order, boundary, domain):
+    for text in default_test_solutions(eq.time_order, boundary, domain) + list(test_solutions):  # built-in tests always
         if text not in exacts:
             exacts.append(text)
 
@@ -426,6 +439,7 @@ class SkillLibrary:
             "summary": candidate.summary,
             "task": task.to_dict() if task else None,
             "validation": report.to_dict(),
+            "exam_version": EXAM_VERSION,
         }
         path.with_suffix(".json").write_text(json.dumps(manifest, ensure_ascii=False, indent=2), encoding="utf-8")
         return path
@@ -441,14 +455,45 @@ class SkillLibrary:
         registry.register(spec)
         return spec
 
-    def load_into(self, registry: SolverRegistry, equations: EquationBook) -> list[str]:
-        """Load every installed skill; returns problems for those that failed."""
+    def load_into(self, registry: SolverRegistry, equations: EquationBook, timeout: float = 300.0) -> list[str]:
+        """Load every installed skill; returns a sentence for each one that is disabled or failed to load.
+
+        A skill admitted by an older exam is examined again first. If it fails,
+        its manifest gets ``disabled`` (the reason) and it is not loaded again
+        until someone deletes that entry.
+        """
         errors = []
         for manifest in self.manifests():
             path = self.root / manifest.get("file", "")
+            if manifest.get("disabled"):
+                errors.append(f"技能 {path.name} 已停用：{manifest['disabled']}")
+                continue
             try:
+                if int(manifest.get("exam_version", 1)) < EXAM_VERSION:
+                    task = SkillTask.from_dict(manifest["task"]) if manifest.get("task") else None
+                    tests = [case["exact"] for case in manifest.get("validation", {}).get("cases", [])]
+                    report = validate_file(path, task, tests, timeout)
+                    if not report.ok:
+                        manifest.update(disabled=report.message,
+                                        disabled_at=datetime.now(timezone.utc).isoformat(timespec="seconds"))
+                        self._save_manifest(path.with_suffix(".json"), manifest)
+                        errors.append(f"技能 {path.name} 已停用：{report.message}")
+                        continue
+                    manifest.update(exam_version=EXAM_VERSION, validation=report.to_dict())
+                    manifest.pop("disabled_at", None)
+                    self._save_manifest(path.with_suffix(".json"), manifest)
                 self.load_file(path, registry, equations)
             except Exception as exc:
-                errors.append(f"{path.name}: {exc}")
+                errors.append(f"技能 {path.name} 加载失败：{exc}")
         return errors
+
+    @staticmethod
+    def _save_manifest(path: Path, manifest: dict) -> None:
+        """Replace a manifest in one step; if that fails, the skill is simply examined again next start."""
+        tmp = path.with_name(path.name + ".tmp")
+        try:
+            tmp.write_text(json.dumps(manifest, ensure_ascii=False, indent=2), encoding="utf-8")
+            os.replace(tmp, path)
+        except OSError:
+            pass
 

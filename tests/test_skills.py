@@ -1,14 +1,20 @@
+import dataclasses
+import json
+
 import pytest
 
+from pde_agent import skills
 from pde_agent.agent import PDEAgent
 from pde_agent.curriculum import frontier_lessons
-from pde_agent.equations import builtin_equations
+from pde_agent.equations import Equation, builtin_equations
 from pde_agent.problem import PDEProblem
 from pde_agent.skills import (
+    EXAM_VERSION,
     TEMPLATE,
     SkillCandidate,
     SkillLibrary,
     SkillTask,
+    ValidationReport,
     static_check,
     validate_candidate,
 )
@@ -135,3 +141,112 @@ def test_skills_cannot_copy_the_answer(kind, field, hint):
     task = SkillTask.from_problem(problem, builtin_equations(), builtin_registry())
     report = validate_candidate(SkillCandidate(code=CHEAT.format(kind=kind, field=field)), task)
     assert not report.ok and hint in report.feedback()
+
+
+FORM, FLIPPED_FORM = '"u_t = D * u_xx - r * u + f"', '"u_t = D * u_xx + r * u + f"'
+
+
+def test_skill_must_solve_the_equation_the_task_states():
+    _, task = reaction_task()
+    flipped = (GOOD.replace('+ c["r"] * u', '- c["r"] * u').replace("- r * eye", "+ r * eye")
+               .replace(FORM, FLIPPED_FORM))  # operator, solver and form agree with each other, not with the task
+    report = validate_candidate(SkillCandidate(code=flipped), task)
+    assert not report.ok and report.message.startswith("operator does not match the task equation")
+
+
+def test_equation_form_must_match_the_operator():
+    _, task = reaction_task()
+    report = validate_candidate(SkillCandidate(code=GOOD.replace(FORM, FLIPPED_FORM)), task)
+    assert not report.ok and report.message.startswith("EQUATION form does not match operator")
+
+
+def test_new_equation_needs_equation_text():
+    _, task = reaction_task()
+    report = validate_candidate(SkillCandidate(code=GOOD), dataclasses.replace(task, equation=""))
+    assert not report.ok
+    assert report.message == "the task gives no equation text to check EQUATION against"
+
+
+def test_learned_equations_take_the_problem_text_first():
+    lesson, _ = reaction_task()
+    book = builtin_equations()
+    book.add(Equation(kind="reaction_diffusion", form="u_t = D * u_xx - r * u + f", time_order=1,
+                      operator=lambda u, x, y, t, c: u, origin="learned"))
+    stated = SkillTask.from_problem(lesson.problem, book, builtin_registry())
+    assert stated.equation == "u_t = D*u_xx - r*u + f" and not stated.new_equation
+    bare = PDEProblem.from_dict({**lesson.problem.to_dict(), "equation": ""})
+    assert SkillTask.from_problem(bare, book, builtin_registry()).equation == "u_t = D * u_xx - r * u + f"
+
+
+def install_as_v09(root, code, task, solver):
+    """A skill as v0.9.0 left it: admitted by the old exam, no exam_version in its manifest."""
+    report = ValidationReport(ok=True, message="passed", solver=solver, kind=task.kind, order=2.0)
+    path = SkillLibrary(root).install(SkillCandidate(code=code), report, task).with_suffix(".json")
+    manifest = json.loads(path.read_text(encoding="utf-8"))
+    del manifest["exam_version"]
+    path.write_text(json.dumps(manifest), encoding="utf-8")
+    return path
+
+
+def heat_task():
+    problem = PDEProblem(kind="heat", domain=[(0.0, 1.0)], t_final=0.5, initial="sin(pi*x)")
+    return SkillTask.from_problem(problem, builtin_equations(), builtin_registry())
+
+
+def test_builtin_tests_always_come_first():
+    _, task = reaction_task()
+    extra = ["sin(pi*x)*cos(t)", "cos(pi*x)*exp(-t)", "sin(2*pi*x)*(1 + t)"]
+    report = validate_candidate(SkillCandidate(code=GOOD, test_solutions=extra), task)
+    assert report.ok, report.feedback()
+    assert [case["exact"] for case in report.cases] == ["sin(pi*x)*exp(-t)", "cos(2*x)*cos(t) + x*t", *extra[:2]]
+
+
+def test_install_records_the_exam_version(tmp_path):
+    _, task = reaction_task()
+    report = ValidationReport(ok=True, message="passed", solver="reaction_diffusion.crank_nicolson",
+                              kind="reaction_diffusion", order=2.0)
+    path = SkillLibrary(tmp_path).install(SkillCandidate(code=GOOD), report, task)
+    assert json.loads(path.with_suffix(".json").read_text(encoding="utf-8"))["exam_version"] == EXAM_VERSION == 2
+
+
+def test_old_skills_are_examined_again_and_upgraded(tmp_path):
+    _, task = reaction_task()
+    manifest = install_as_v09(tmp_path / "skills", GOOD, task, "reaction_diffusion.crank_nicolson")
+    agent = PDEAgent(home=tmp_path)
+    assert agent.skill_errors == [] and agent.registry.get("reaction_diffusion.crank_nicolson") is not None
+    data = json.loads(manifest.read_text(encoding="utf-8"))
+    assert data["exam_version"] == 2
+    assert data["validation"]["ok"] and len(data["validation"]["cases"]) == 2
+
+
+def test_old_cheating_skills_are_disabled_once(tmp_path, monkeypatch):
+    manifest = install_as_v09(tmp_path / "skills", CHEAT.format(kind="heat", field="exact"), heat_task(), "heat.peek")
+    agent = PDEAgent(home=tmp_path)
+    reason = "the solver raised an error on a test problem"
+    assert agent.skill_errors == [f"技能 heat__peek.py 已停用：{reason}"]
+    assert agent.registry.get("heat.peek") is None
+    data = json.loads(manifest.read_text(encoding="utf-8"))
+    assert data["disabled"] == reason and data["disabled_at"] and "exam_version" not in data
+    monkeypatch.setattr(skills, "validate_file", lambda *args, **kwargs: pytest.fail("examined a disabled skill again"))
+    assert PDEAgent(home=tmp_path).skill_errors == agent.skill_errors
+
+
+def test_old_new_equation_skills_without_equation_text_are_disabled(tmp_path):
+    _, task = reaction_task()
+    install_as_v09(tmp_path / "skills", GOOD, dataclasses.replace(task, equation=""), "reaction_diffusion.crank_nicolson")
+    assert PDEAgent(home=tmp_path).skill_errors == [
+        "技能 reaction_diffusion__crank_nicolson.py 已停用：the task gives no equation text to check EQUATION against"]
+
+
+def test_a_disabled_skill_comes_back_once_its_reason_is_deleted(tmp_path):
+    _, task = reaction_task()
+    manifest = install_as_v09(tmp_path / "skills", GOOD, task, "reaction_diffusion.crank_nicolson")
+    data = json.loads(manifest.read_text(encoding="utf-8"))
+    data.update(disabled="observed order 1.1 is below 1.40 (claimed order 2.0)", disabled_at="2026-10-14T00:00:00+00:00")
+    manifest.write_text(json.dumps(data), encoding="utf-8")
+    assert PDEAgent(home=tmp_path).registry.get("reaction_diffusion.crank_nicolson") is None
+    del data["disabled"]  # what the CHANGELOG tells people to do
+    manifest.write_text(json.dumps(data), encoding="utf-8")
+    agent = PDEAgent(home=tmp_path)
+    assert agent.skill_errors == [] and agent.registry.get("reaction_diffusion.crank_nicolson") is not None
+    assert json.loads(manifest.read_text(encoding="utf-8"))["exam_version"] == 2

@@ -29,7 +29,7 @@ def _brain(args):
 def _agent(args) -> PDEAgent:
     agent = PDEAgent(home=args.home, brain=_brain(args), explore=not args.no_explore)
     for problem in agent.skill_errors:
-        print(f"警告：技能加载失败 {problem}", file=sys.stderr)
+        print(f"警告：{problem}", file=sys.stderr)
     return agent
 
 

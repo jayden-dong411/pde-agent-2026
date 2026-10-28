@@ -249,6 +249,7 @@ td.desc { white-space: normal; min-width: 220px; color: var(--muted); }
 th { color: var(--muted); font-weight: 500; font-size: 12px; }
 .origin { font-size: 12px; padding: 1px 8px; border-radius: 999px; background: var(--track); color: var(--muted); }
 .origin.learned { background: var(--accent-soft); color: var(--accent-ink); }
+.section-head .skill-errors { color: var(--bad); text-decoration: underline dotted; cursor: help; }
 </style>
 </head>
 <body>
@@ -947,6 +948,10 @@ function showMethods() {
     el("tbody", {}, ...rows));
   const learned = info.methods.filter((m) => m.origin !== "builtin").length;
   $("methods-note").textContent = `${info.equations.length} 种方程 · ${info.methods.length} 个方法${learned ? `，其中 ${learned} 个是学会的` : ""}`;
+  const problems = info.skill_errors || [];
+  if (problems.length) {
+    $("methods-note").append(" · ", el("span", { class: "skill-errors", title: problems.join("\n") }, `${problems.length} 个技能没有加载`));
+  }
 }
 
 async function loadInfo() {

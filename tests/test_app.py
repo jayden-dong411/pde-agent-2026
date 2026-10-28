@@ -9,6 +9,7 @@ import urllib.error
 import urllib.request
 
 import pytest
+from test_cli import broken_skill
 from test_deepseek import ScriptedOpenAI
 from test_llm import HEAT_REPLY
 
@@ -55,6 +56,7 @@ def test_page_and_info(serve, monkeypatch):
     base = serve()
     status, page = call(base + "/")
     assert status == 200 and "<title>PDE Agent</title>" in page and "/api/solve" in page
+    assert "个技能没有加载" in page
     for outside in ('src="http', "src='http", 'href="http', "url(http", "@import", "fetch(\"http", "fetch('http"):
         assert outside not in page  # the page loads nothing from the internet
     status, info = call(base + "/api/info")
@@ -64,6 +66,7 @@ def test_page_and_info(serve, monkeypatch):
     assert {"poisson", "heat", "advection", "wave"} <= {eq["kind"] for eq in info["equations"]}
     assert any(m["origin"] == "builtin" for m in info["methods"])
     assert len(info["examples"]) > len(basic_curriculum())  # frontier lessons too
+    assert info["skill_errors"] == []
     assert call(base + "/nowhere")[0] == 404
 
 
@@ -331,3 +334,9 @@ def test_claude_answers_in_plain_text():
     assert brain.answer("system", [{"role": "user", "content": "1+1"}]) == "答案是 2"
     call_ = client.calls[0]
     assert call_["thinking"] == {"type": "adaptive"} and "output_config" not in call_
+
+
+def test_info_lists_skills_that_did_not_load(serve, tmp_path):
+    broken_skill(tmp_path)
+    errors = call(serve() + "/api/info")[1]["skill_errors"]
+    assert len(errors) == 1 and errors[0].startswith("技能 heat__broken.py 加载失败：")

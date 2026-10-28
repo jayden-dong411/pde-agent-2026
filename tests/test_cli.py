@@ -33,3 +33,19 @@ def test_deepseek_without_a_key_is_a_clear_error(tmp_path, monkeypatch, capsys):
     assert main(["--home", str(tmp_path), "--llm", "deepseek", "ask", "求解一维热方程"]) == 2
     err = capsys.readouterr().err
     assert "调用 DeepSeek 失败" in err and "DEEPSEEK_API_KEY" in err
+
+
+def broken_skill(home):
+    """A skill that passed the current exam but whose file no longer imports."""
+    skills = home / "skills"
+    skills.mkdir(parents=True)
+    (skills / "heat__broken.py").write_text("this is not python", encoding="utf-8")
+    manifest = {"solver": "heat.broken", "kind": "heat", "file": "heat__broken.py",
+                "created": "2026-10-14T00:00:00+00:00", "exam_version": 2}
+    (skills / "heat__broken.json").write_text(json.dumps(manifest), encoding="utf-8")
+
+
+def test_skill_problems_are_printed_as_warnings(tmp_path, capsys):
+    broken_skill(tmp_path)
+    assert main(["--home", str(tmp_path), "skills"]) == 0
+    assert capsys.readouterr().err.startswith("警告：技能 heat__broken.py 加载失败：")

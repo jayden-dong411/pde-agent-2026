@@ -8,8 +8,10 @@ import pytest
 from pde_agent.agent import PDEAgent
 from pde_agent.curriculum import frontier_lessons
 from pde_agent.equations import builtin_equations
-from pde_agent.llm import DEFAULT_MODEL, FALLBACK_BETA, SKILL_SYSTEM, ClaudeBrain, LLMError
-from pde_agent.skills import TEMPLATE
+from pde_agent.llm import DEFAULT_MODEL, FALLBACK_BETA, PARSE_SYSTEM, SKILL_SYSTEM, ClaudeBrain, LLMError, task_prompt
+from pde_agent.problem import PDEProblem
+from pde_agent.skills import TEMPLATE, SkillTask
+from pde_agent.solvers import builtin_registry
 
 GOOD = TEMPLATE.read_text(encoding="utf-8")
 
@@ -195,3 +197,32 @@ def test_api_failures_become_a_failed_lesson_not_a_crash(tmp_path):
 def test_skill_prompt_does_not_offer_the_exact_solution():
     assert '"initial_velocity", "exact"' not in SKILL_SYSTEM
     assert "The exact solution is never passed to solve()" in SKILL_SYSTEM
+
+
+@pytest.mark.parametrize("text,why", [
+    ("du/dt = D*d2u/dx2 - r*u", "unknown names in 'du/dt = D*d2u/dx2 - r*u': d2u, dt, du, dx2"),
+    ("u_t = D*u_xx - k*u + f", "unknown names in 'u_t = D*u_xx - k*u + f': k"),
+])
+def test_new_equation_text_is_checked_before_asking_the_model(tmp_path, text, why):
+    client = ScriptedClient([{"code": "SOLVER = {}\n", "test_solutions": [], "summary": ""}])
+    agent = PDEAgent(home=tmp_path, brain=ClaudeBrain(client=client))
+    problem = PDEProblem.from_dict({**frontier_lessons()[0].problem.to_dict(), "equation": text})
+    outcome = agent.learn(problem, max_rounds=1)
+    assert not outcome.success and client.calls == []
+    assert outcome.message == f"新方程的写法没法核对：{why}。请写成 u_t = D*u_xx - r*u + f 这样的形式"
+
+
+def test_prompts_explain_the_equation_check():
+    assert "u is the unknown and f the source term, both without arguments" in PARSE_SYSTEM
+    new, known = (SkillTask.from_problem(lesson.problem, builtin_equations(), builtin_registry())
+                  for lesson in frontier_lessons()[:2])  # reaction-diffusion (new), 2-D heat (built-in)
+    line = "- EQUATION form and operator must match this equation; the exam checks it."
+    assert line in task_prompt(new) and line not in task_prompt(known)
+
+
+def test_skill_prompt_and_session_take_at_most_two_extra_tests():
+    assert "up to two extra exact solutions" in SKILL_SYSTEM
+    reply = {"code": GOOD, "test_solutions": ["sin(pi*x)*cos(t)", "cos(pi*x)*exp(-t)", "x*t"], "summary": ""}
+    task = SkillTask.from_problem(frontier_lessons()[0].problem, builtin_equations(), builtin_registry())
+    candidate = ClaudeBrain(client=ScriptedClient([reply])).skill_session(task).propose()
+    assert candidate.test_solutions == ["sin(pi*x)*cos(t)", "cos(pi*x)*exp(-t)"]

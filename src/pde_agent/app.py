@@ -242,6 +242,7 @@ class AppState:
                  "boundaries": list(s.boundaries), "origin": s.origin, "description": s.description}
                 for s in self.agent.registry
             ],
+            "skill_errors": list(self.agent.skill_errors),
             "examples": [
                 {"name": lesson.name, "title": lesson.title, "level": lesson.level, "tol": lesson.tol,
                  "problem": lesson.problem.to_dict()}

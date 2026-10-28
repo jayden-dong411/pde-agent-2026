@@ -25,7 +25,7 @@ import time
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from .equations import builtin_equations
+from .equations import builtin_equations, operator_from_text
 from .llm import LLMError
 from .memory import ExperienceStore
 from .problem import PDEProblem
@@ -132,7 +132,7 @@ class PDEAgent:
         self.memory = ExperienceStore(self.home / "experience.jsonl" if remember else None,
                                       self.home / "shared_experience.jsonl" if remember else None)
         self.skills = SkillLibrary(self.home / "skills")
-        self.skill_errors = self.skills.load_into(self.registry, self.equations)
+        self.skill_errors = self.skills.load_into(self.registry, self.equations, timeout=self.validation_timeout)
 
     # --- public API ---------------------------------------------------------------
 
@@ -189,6 +189,11 @@ class PDEAgent:
         if self.brain is None:
             raise RuntimeError("learning new methods needs a language model (ClaudeBrain or DeepSeekBrain)")
         task = SkillTask.from_problem(problem, self.equations, self.registry, reason)
+        if task.new_equation:  # the exam checks the skill against this text, so it has to be readable first
+            try:
+                operator_from_text(task.equation, task.coefficients)
+            except ValueError as exc:
+                return LearnOutcome(False, message=f"新方程的写法没法核对：{exc}。请写成 u_t = D*u_xx - r*u + f 这样的形式")
         session = self.brain.skill_session(task)
         report = None
         for round_ in range(1, max_rounds + 1):

@@ -118,6 +118,7 @@ Known equation kinds (the PDE is written as L(u) = f):
 
 Rules:
 - Use a known kind when the equation matches it, and rename coefficients to that kind's names (for example thermal diffusivity -> alpha). Otherwise invent a short snake_case kind and write the equation in `equation`, e.g. "u_t = D*u_xx - r*u + f".
+- Write `equation` so that it can be checked: u is the unknown and f the source term, both without arguments; derivatives are written u_t, u_tt, u_x, u_xx, u_y, u_yy, u_xy; exactly one =; every product with *; only x, y, t, pi, E, the functions listed below and the coefficient names you return. Without f, "+ f" is added to the right-hand side.
 - Expressions use x, y, t, pi and sin, cos, tan, exp, log, sqrt, sinh, cosh, tanh, Abs; write powers with **. Use "" for a field that is not given or does not apply.
 - domain: one interval per spatial dimension. t_final: 0 for steady problems.
 - boundary: "dirichlet" (values prescribed on the boundary: g(x, y, t) goes in boundary_value; "" means zero, or the exact solution when one is given) or "periodic".
@@ -151,7 +152,7 @@ A complete example skill:
 {template}
 ```
 
-Reply with the full module source in `code`, up to three extra exact solutions for the exam in `test_solutions` (expressions in x, y, t that respect the boundary type, e.g. periodic in x for periodic problems), and a one-paragraph `summary` of the method in Chinese."""
+Reply with the full module source in `code`, up to two extra exact solutions for the exam in `test_solutions` (expressions in x, y, t that respect the boundary type, e.g. periodic in x for periodic problems), and a one-paragraph `summary` of the method in Chinese."""
 
 
 def _blank(value: str) -> str | None:
@@ -542,7 +543,7 @@ class SkillSession:
         self.messages.append({"role": "assistant", "content": content})
         return SkillCandidate(
             code=data["code"],
-            test_solutions=[s for s in data.get("test_solutions", []) if isinstance(s, str)][:3],
+            test_solutions=[s for s in data.get("test_solutions", []) if isinstance(s, str)][:2],
             summary=data.get("summary", ""),
         )
 
@@ -568,6 +569,7 @@ def task_prompt(task: SkillTask) -> str:
         "Write a solver skill for this problem class.",
         kind_line,
         f"- equation: {task.equation or '(see kind)'}",
+        *(["- EQUATION form and operator must match this equation; the exam checks it."] if task.new_equation else []),
         f"- spatial dimension: {task.dim}; boundary: {task.boundary}; domain: {task.domain}",
         f"- final time: {task.t_final if task.t_final else 'steady problem'}",
         f"- time order: {task.time_order if task.time_order is not None else 'decide from the equation'}",

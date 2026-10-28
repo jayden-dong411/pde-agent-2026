@@ -38,6 +38,8 @@ class SolveResult:
 
 
 SolveFn = Callable[[PDEProblem, int, dict], SolveResult]
+CostFn = Callable[[PDEProblem, int], float]
+DampingFn = Callable[[PDEProblem, int, float], float]
 
 
 @dataclass(frozen=True)
@@ -45,7 +47,13 @@ class SolverSpec:
     """A numerical method the agent can choose.
 
     ``order`` is the expected convergence rate in ``n`` (error ~ n^-order).
-    ``origin`` is ``builtin`` or ``learned``.
+    ``origin`` is ``builtin`` or ``learned``. Optional hints for choosing a
+    method from problem features (see ``features.py``): ``cost`` predicts the
+    work of a run on an n-interval grid before running it; ``damping`` gives
+    the fraction of a decaying mode with wavenumber k that a run on an
+    n-interval grid leaves behind at the final time (schemes that are not
+    L-stable, like Crank-Nicolson, leave fast modes ringing); ``traits`` name
+    other weaknesses, so far ``dissipative`` (smears travelling waves).
     """
 
     name: str
@@ -56,6 +64,9 @@ class SolverSpec:
     solve: SolveFn
     description: str = ""
     origin: str = "builtin"
+    cost: CostFn | None = None
+    damping: DampingFn | None = None
+    traits: tuple[str, ...] = ()
 
     def supports(self, problem: PDEProblem) -> bool:
         return (
@@ -124,6 +135,13 @@ def evaluate(fn, points: tuple[np.ndarray, ...], t: float = 0.0) -> np.ndarray:
 
 
 MAX_STEPS = 2_000_000
+STEP_OVERHEAD = 64  # fixed cost of one time step (Python loop, boundary updates), in node updates
+
+
+def step_work(problem: PDEProblem, n: int, dt: float) -> float:
+    """Predicted work of a time-stepping run: steps x (nodes + per-step overhead)."""
+    steps = max(1, math.ceil(problem.t_final / dt - 1e-9))
+    return float(steps * ((n + 1) ** problem.dim + STEP_OVERHEAD))
 
 
 def time_grid(t_final: float, dt_target: float, max_steps: int = MAX_STEPS) -> tuple[int, float]:

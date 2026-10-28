@@ -69,6 +69,7 @@ def report_json(report: SolveReport) -> dict:
         "work": _num(report.work),
         "runtime": round(report.runtime, 3),
         "message": report.message,
+        "choice": report.choice(),
         "trials": [{**t, "label": OUTCOMES.get(t["outcome"], t["outcome"]), "error": _num(t.get("error")),
                     "work": _num(t.get("work"))} for t in report.trials],
         "learned": [{"success": o.success, "solver": o.solver, "rounds": o.rounds, "message": o.message} for o in report.learned],

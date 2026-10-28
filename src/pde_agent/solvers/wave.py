@@ -5,7 +5,7 @@ from __future__ import annotations
 import numpy as np
 
 from ..problem import PDEProblem
-from .base import SolveResult, SolverSpec, check_growth, grid, growth_limit, time_grid
+from .base import SolveResult, SolverSpec, check_growth, grid, growth_limit, step_work, time_grid
 
 
 def solve_leapfrog(problem: PDEProblem, n: int, options: dict) -> SolveResult:
@@ -43,6 +43,12 @@ def solve_leapfrog(problem: PDEProblem, n: int, options: dict) -> SolveResult:
     )
 
 
+def cost(problem: PDEProblem, n: int) -> float:
+    h = (problem.domain[0][1] - problem.domain[0][0]) / n
+    speed = abs(problem.coefficients.get("c", 1.0))
+    return step_work(problem, n, 0.8 * h / (speed if speed > 1e-12 else 1.0))
+
+
 SOLVERS = (
     SolverSpec(
         name="wave.leapfrog",
@@ -51,6 +57,7 @@ SOLVERS = (
         boundaries=("dirichlet",),
         order=2.0,
         solve=solve_leapfrog,
+        cost=cost,
         description="Second-order leapfrog (central differences in space and time)",
     ),
 )

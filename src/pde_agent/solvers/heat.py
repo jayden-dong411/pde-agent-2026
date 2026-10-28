@@ -2,12 +2,14 @@
 
 from __future__ import annotations
 
+import math
+
 import numpy as np
 import scipy.sparse as sparse
 from scipy.sparse.linalg import splu
 
 from ..problem import PDEProblem
-from .base import SolveResult, SolverSpec, check_growth, grid, growth_limit, laplacian_1d, time_grid
+from .base import SolveResult, SolverSpec, check_growth, grid, growth_limit, laplacian_1d, step_work, time_grid
 
 
 class _Setup:
@@ -93,6 +95,34 @@ def solve_crank_nicolson(problem: PDEProblem, n: int, options: dict) -> SolveRes
     return _implicit(problem, n, options, theta=0.5, name="heat.crank_nicolson", cfl=1.0)
 
 
+def _h(problem: PDEProblem, n: int) -> float:
+    return (problem.domain[0][1] - problem.domain[0][0]) / n
+
+
+def _alpha(problem: PDEProblem) -> float:
+    return max(problem.coefficients.get("alpha", 1.0), 1e-12)
+
+
+def cost_ftcs(problem: PDEProblem, n: int) -> float:
+    return step_work(problem, n, 0.4 * _h(problem, n) ** 2 / _alpha(problem))
+
+
+def cost_backward_euler(problem: PDEProblem, n: int) -> float:
+    return step_work(problem, n, 0.5 * _h(problem, n))
+
+
+def cost_crank_nicolson(problem: PDEProblem, n: int) -> float:
+    return step_work(problem, n, 1.0 * _h(problem, n))
+
+
+def damping_crank_nicolson(problem: PDEProblem, n: int, k: float) -> float:
+    """What is left of the mode sin(kx) at t_final: CN damps a fast mode by |1 - z/2| / |1 + z/2| per step."""
+    dt = 1.0 * _h(problem, n)
+    steps = max(1, math.ceil(problem.t_final / dt - 1e-9))
+    z = _alpha(problem) * (problem.t_final / steps) * k**2
+    return abs((1 - z / 2) / (1 + z / 2)) ** steps
+
+
 SOLVERS = (
     SolverSpec(
         name="heat.ftcs",
@@ -101,6 +131,7 @@ SOLVERS = (
         boundaries=("dirichlet",),
         order=2.0,
         solve=solve_ftcs,
+        cost=cost_ftcs,
         description="Explicit forward-time centred-space; dt ~ h^2 for stability",
     ),
     SolverSpec(
@@ -110,6 +141,7 @@ SOLVERS = (
         boundaries=("dirichlet",),
         order=1.0,
         solve=solve_backward_euler,
+        cost=cost_backward_euler,
         description="Implicit backward Euler, unconditionally stable, first order in time",
     ),
     SolverSpec(
@@ -119,6 +151,8 @@ SOLVERS = (
         boundaries=("dirichlet",),
         order=2.0,
         solve=solve_crank_nicolson,
+        cost=cost_crank_nicolson,
+        damping=damping_crank_nicolson,
         description="Implicit Crank-Nicolson, second order in space and time",
     ),
 )

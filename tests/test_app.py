@@ -76,6 +76,7 @@ def test_solve_1d_from_a_lesson(serve):
     status, report = call(base + "/api/solve", {"problem": poisson.problem.to_dict(), "tol": poisson.tol})
     assert status == 200, report
     assert report["success"] and report["error"] < poisson.tol and report["error_kind"] == "exact"
+    assert report["choice"].startswith("题目特征：")
     solution = report["solution"]
     assert solution["dim"] == 1 and solution["exact"] is not None
     assert len(solution["axes"][0]) == len(solution["u"]) <= MAX_POINTS

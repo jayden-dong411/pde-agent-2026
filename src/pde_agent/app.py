@@ -255,6 +255,10 @@ class AppState:
         problem = problem_from_form(payload)
         tol = self._tol(payload)
         learn = bool(payload.get("learn"))
+        try:
+            self.agent.equations.complete(problem)  # a misspelled coefficient is the form's fault, not the solver's
+        except ValueError as exc:
+            raise RequestError(f"题目有误：{exc}") from exc
         with self.lock:
             if learn:
                 self._brain_or_error()

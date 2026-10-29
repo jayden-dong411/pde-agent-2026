@@ -125,6 +125,12 @@ def sync(memory: ExperienceStore, home: Path | str, client: HubClient, lock=None
     hub = state.for_hub(client.url)
     sent, after = int(hub.get("sent", 0)), int(hub.get("after", 0))
     with lock or _NoLock():
+        ids = [episode_id(ep) for ep in memory.episodes]
+        last = hub.get("sent_id")
+        if isinstance(last, str):
+            # by id, not by count: if the experience file was cleared or rewritten, the count points past new
+            # episodes; an id that is gone means start over (the hub ignores episodes it already has)
+            sent = ids.index(last) + 1 if last in ids else 0
         sent = min(sent, len(memory.episodes))
         todo = pending(memory, sent)
     pushed = 0
@@ -134,7 +140,7 @@ def sync(memory: ExperienceStore, home: Path | str, client: HubClient, lock=None
         if good:
             pushed += int(client.upload(good).get("accepted", 0))
         sent += len(batch)
-        state.save(client.url, sent=sent)
+        state.save(client.url, sent=sent, sent_id=ids[sent - 1])
     pulled = 0
     for _ in range(MAX_PAGES):
         page = client.download(after)

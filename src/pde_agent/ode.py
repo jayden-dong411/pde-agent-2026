@@ -162,6 +162,13 @@ class ODEProblem:
         raw = self._lambdified("f", self._rhs)
         return np.array(raw(t, *y), dtype=float).reshape(self.size)
 
+    def f_half(self, t: float, y: np.ndarray, second: bool) -> np.ndarray:
+        """One half of the right-hand side: the first ``size // 2`` components, or the rest (for Verlet)."""
+        half = self.size // 2
+        part = self._rhs[half:] if second else self._rhs[:half]
+        raw = self._lambdified("f2" if second else "f1", part)
+        return np.array(raw(t, *y), dtype=float).reshape(len(part))
+
     def jac(self, t: float, y: np.ndarray) -> np.ndarray:
         """Jacobian df/dy at one state, from the symbolic right-hand side."""
         raw = self._lambdified("jac", self._jacobian())

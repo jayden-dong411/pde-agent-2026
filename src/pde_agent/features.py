@@ -41,6 +41,7 @@ FLOOR_RESOLUTION = 0.1
 STIFF = 50.0  # stiffness above which the problem counts as stiff
 LONG = 4.0  # domain lengths crossed above which dissipation and dispersion pile up
 _ROUGH = {"Abs", "sign", "Heaviside", "floor", "ceiling", "Min", "Max"}
+_JUMPS = {"sign", "Heaviside", "floor", "ceiling"}  # discontinuous: every mode a grid carries is in the data
 _DIFFUSION = {"heat": "alpha"}
 _SPEED = {"advection": "c", "wave": "c"}
 
@@ -49,6 +50,7 @@ _SPEED = {"advection": "c", "wave": "c"}
 class ProblemFeatures:
     floor: int
     smooth: bool = True
+    jumps: bool = False  # the data jump (not just kink): a grid sees modes up to its own resolution
     stiffness: float = 0.0
     wavenumber: float = 0.0  # finest wavenumber in the initial data
     travel: float = 0.0
@@ -121,6 +123,7 @@ def extract(problem: PDEProblem, floor: int) -> ProblemFeatures:
         if expr is not None:
             names |= {node.func.__name__ for node in sp.preorder_traversal(expr)}
     feats.smooth = not (names & _ROUGH)
+    feats.jumps = bool(names & _JUMPS)
     tags = []
     if not feats.smooth:
         tags.append("rough")
@@ -164,10 +167,20 @@ def predict(spec: SolverSpec, problem: PDEProblem, feats: ProblemFeatures, tol: 
             if stable > max_n:
                 return Prediction(spec.name, max_n, max_n, math.inf, order, notes)
             n = start = stable
-    if "stiff" in feats.tags and spec.damping is not None:
+    if ("stiff" in feats.tags or (feats.jumps and problem.time_dependent)) and spec.damping is not None:
+        length = problem.domain[0][1] - problem.domain[0][0] if problem.dim else 1.0
+
+        def mode(m: int) -> float:
+            # jumping data hold every mode the grid carries, up to k = pi * m / L, not just the resolved ones
+            return max(feats.wavenumber, math.pi * m / length) if feats.jumps and problem.dim else feats.wavenumber
+
         accurate = n
-        while n < max_n and spec.damping(problem, n, feats.wavenumber) > tol:
+        while n < max_n and spec.damping(problem, n, mode(n)) > tol:
             n *= 2
+        if spec.damping(problem, n, mode(n)) > tol:
+            # the fast modes ring on every grid up to max_n: the method cannot meet tol, whatever its error estimate says
+            notes.append("高频模态在最细的网格上也衰减不掉，这个方法不适用")
+            return Prediction(spec.name, max_n, max_n, math.inf, order, notes)
         if n > accurate:
             start = n  # below it the fast modes ring; that is not an estimate
             notes.append(f"刚性：最快的模态要 n ≥ {n} 步才衰减干净" if feats.ode else f"刚性：初值里的高频要 n ≥ {n} 才衰减干净")

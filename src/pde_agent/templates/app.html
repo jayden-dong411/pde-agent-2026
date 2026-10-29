@@ -368,7 +368,8 @@ th { color: var(--muted); font-weight: 500; font-size: 12px; }
           <div class="quad">
             <div class="field">
               <label for="kind">方程类型</label>
-              <select id="kind"></select>
+              <input type="text" id="kind" list="kinds" value="poisson" autocomplete="off" spellcheck="false">
+              <datalist id="kinds"></datalist>
             </div>
             <div class="field">
               <label for="boundary">边界</label>
@@ -396,6 +397,11 @@ th { color: var(--muted); font-weight: 500; font-size: 12px; }
               <label for="exact">精确解 <span>· 可选</span></label>
               <input type="text" id="exact">
             </div>
+          </div>
+
+          <div class="field" id="equation-row">
+            <label for="equation">方程 <span>· 新方程才要填，例如 u_t = D*u_xx - r*u + f</span></label>
+            <input type="text" id="equation" spellcheck="false">
           </div>
 
           <details class="more" id="more">
@@ -538,7 +544,7 @@ th { color: var(--muted); font-weight: 500; font-size: 12px; }
 <script>
 "use strict";
 const $ = (id) => document.getElementById(id);
-const FIELDS = ["source", "exact", "initial", "boundary_value", "initial_velocity"];
+const FIELDS = ["source", "exact", "initial", "boundary_value", "initial_velocity", "equation"];
 const MORE = ["initial", "boundary_value", "initial_velocity"];
 const GREEK = { alpha: "α", beta: "β", gamma: "γ", delta: "δ", kappa: "κ", lambda: "λ", mu: "μ", nu: "ν", sigma: "σ", omega: "ω", pi: "π" };
 let info = null;
@@ -611,7 +617,8 @@ function updateEquation() {
   const eq = info.equations.find((e) => e.kind === $("kind").value);
   let dims = 1, domain = [];
   try { domain = readDomain(); dims = Math.max(domain.length, 1); } catch { /* shown on solve */ }
-  let form = eq ? eq.form : `${$("kind").value}（还不会，求解时可以让大模型学）`;
+  const typed = $("equation").value.trim();
+  let form = eq ? eq.form : (typed ? `${typed}（新方程，求解时可以让大模型学）` : `${$("kind").value}（还不会：填上方程，求解时可以让大模型学）`);
   if (eq && dims === 1) form = form.replace(/\((\w+_xx) \+ \w+_yy\)/, "$1").replace(/\s*\+\s*\w+_yy/, "");
   $("formula").replaceChildren(...(eq ? formula(form) : [form]));
   const bc = $("boundary").value === "periodic" ? "周期" : "Dirichlet";
@@ -671,7 +678,7 @@ async function loadPreview() {
 }
 
 function fillForm(p) {
-  if (![...$("kind").options].some((o) => o.value === p.kind)) $("kind").append(el("option", { value: p.kind }, p.kind));
+  if (![...$("kinds").options].some((o) => o.value === p.kind)) $("kinds").append(el("option", { value: p.kind }));
   $("kind").value = p.kind;
   $("boundary").value = p.boundary;
   $("domain").value = p.domain.map((d) => d.join(", ")).join("; ");
@@ -687,7 +694,7 @@ function readForm() {
   if (!domain.length) throw new Error("请填写区域");
   const t = $("t_final").value.trim();
   if (t && !isFinite(Number(t))) throw new Error("终止时间必须是数字");
-  const problem = { kind: $("kind").value, boundary: $("boundary").value, domain,
+  const problem = { kind: $("kind").value.trim(), boundary: $("boundary").value, domain,
     coefficients: readCoefficients(), t_final: t ? Number(t) : null };
   for (const f of FIELDS) problem[f] = $(f).value.trim();
   const preset = info.examples.find((e) => e.name === $("preset").value);
@@ -1275,7 +1282,7 @@ async function init() {
   setupSettings();
   setupCloud();
   try { await loadInfo(); } catch (e) { $("llm-text").textContent = e.message; return; }
-  for (const eq of info.equations) $("kind").append(el("option", { value: eq.kind }, eq.kind));
+  for (const eq of info.equations) $("kinds").append(el("option", { value: eq.kind }));
   for (const ex of info.examples) $("preset").append(el("option", { value: ex.name }, `第 ${ex.level} 级 · ${ex.title}`));
   $("preset").addEventListener("change", () => {
     const ex = info.examples.find((e) => e.name === $("preset").value);

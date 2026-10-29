@@ -74,7 +74,12 @@ def cmd_curriculum(args) -> int:
 def cmd_solve(args) -> int:
     data = json.loads(Path(args.problem).read_text(encoding="utf-8"))
     agent = _agent(args)
-    report = agent.solve(problem_from_dict(data), args.tol, learn=agent.brain is not None)
+    try:
+        problem = agent.equations.complete(problem_from_dict(data))
+    except (TypeError, ValueError) as exc:
+        print(f"题目有误：{exc}", file=sys.stderr)
+        return 1
+    report = agent.solve(problem, args.tol, learn=agent.brain is not None)
     if report.choice():
         print(report.choice())
     print(report.summary())
@@ -161,7 +166,7 @@ def cmd_stats(args) -> int:
         return 0
     print(f"{'问题类别':<26} {'方法':<34} {'尝试':>4} {'成功':>4} {'平均工作量':>12}")
     for r in rows:
-        print(f"{r['signature']:<26} {r['method']:<34} {r['tries']:>6} {r['successes']:>6} {_fmt(r['mean_work'], '.3g'):>14}")
+        print(f"{r['signature']:<26} {r['method']:<34} {r['tries']:>6g} {r['successes']:>6g} {_fmt(r['mean_work'], '.3g'):>14}")
     print(f"共 {len(agent.memory.episodes)} 次求解记录：{agent.memory.path}")
     if agent.memory.shared:
         print(f"另有 {len(agent.memory.shared)} 条来自经验中心的共享记录：{agent.memory.shared_path}")

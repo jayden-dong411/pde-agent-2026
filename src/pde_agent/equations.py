@@ -35,6 +35,8 @@ class Equation:
     defaults: dict[str, float] = field(default_factory=dict)
     description: str = ""
     origin: str = "builtin"
+    # coefficients -> why they make no sense for this equation, or None
+    check: Callable[[dict], str | None] | None = None
 
     def apply(self, u: sp.Expr, coefficients: dict[str, float]) -> sp.Expr:
         return self.operator(u, X, Y, T, {**self.defaults, **coefficients})
@@ -52,6 +54,7 @@ BUILTIN_EQUATIONS = (
         operator=lambda u, x, y, t, c: -c["k"] * _laplacian(u, x, y),
         defaults={"k": 1.0},
         description="Poisson equation (elliptic, steady diffusion)",
+        check=lambda c: "系数 k 不能是 0" if c["k"] == 0 else None,
     ),
     Equation(
         kind="heat",
@@ -60,6 +63,7 @@ BUILTIN_EQUATIONS = (
         operator=lambda u, x, y, t, c: sp.diff(u, t) - c["alpha"] * _laplacian(u, x, y),
         defaults={"alpha": 1.0},
         description="Heat / diffusion equation (parabolic)",
+        check=lambda c: "系数 alpha 必须大于 0（alpha ≤ 0 时热方程是不适定的）" if c["alpha"] <= 0 else None,
     ),
     Equation(
         kind="advection",
@@ -103,9 +107,29 @@ class EquationBook:
         return iter(self._equations.values())
 
     def complete(self, problem: PDEProblem) -> PDEProblem:
-        """Fill in default coefficients for a known equation kind."""
+        """Fill in default coefficients for a known equation kind.
+
+        Raises ``ValueError`` for a coefficient the equation does not have and no
+        expression of the problem uses: it is almost always a misspelled name
+        (``D`` for ``alpha``), and solving with the default instead gives a wrong answer.
+        """
         eq = self.get(problem.kind)
-        return problem.with_coefficients(eq.defaults) if eq else problem
+        if eq is None:
+            return problem
+        used: set[str] = set()
+        for name in ("source", "boundary_value", "initial", "initial_velocity", "exact"):
+            text = getattr(problem, name, None)
+            if text:
+                used |= _names(text)
+        stray = sorted(set(problem.coefficients) - set(eq.defaults) - used)
+        if stray:
+            known = ", ".join(eq.defaults) or "没有系数"
+            raise ValueError(f"{eq.kind} 方程没有系数 {', '.join(stray)}（它的系数是：{known}）")
+        problem = problem.with_coefficients(eq.defaults)
+        why = eq.check(problem.coefficients) if eq.check else None
+        if why:
+            raise ValueError(f"{eq.kind} 方程：{why}")
+        return problem
 
 
 def builtin_equations() -> EquationBook:

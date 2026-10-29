@@ -34,10 +34,11 @@ from .solvers.base import SolverSpec
 @dataclass
 class MethodStats:
     method: str
-    tries: int = 0
-    successes: int = 0
+    tries: float = 0  # weighted: another person's episode counts SHARED_WEIGHT of one of ours
+    successes: float = 0
     work: list[float] = field(default_factory=list)  # work spent in successful episodes
     grids: list[tuple[float, int, str]] = field(default_factory=list)  # (tol, n, error kind) on success
+    local_grids: list[tuple[float, int, str]] = field(default_factory=list)  # the same, from this computer only
 
     @property
     def failures(self) -> int:
@@ -56,8 +57,11 @@ class MethodStats:
 _ID = re.compile(r"[0-9a-f]{32}")
 _SIGNATURE = re.compile(r"[a-z][a-z0-9_]{0,40}/[0-3]d/[a-z][a-z0-9_]{0,20}")
 _NAME = re.compile(r"[A-Za-z0-9_.\-]{1,80}")
-_OUTCOMES = {"success", "unstable", "error", "stagnated", "max_n", "budget"}
+_OUTCOMES = {"success", "unstable", "error", "stagnated", "max_n", "budget", "skipped"}
 _TAG = re.compile(r"[a-z]{1,20}")
+_MEMBER = re.compile(r"[^\s/\\]{1,40}")
+SHARED_WEIGHT = 0.5  # other people's episodes inform the choice, ours decide it
+MAX_PER_MEMBER = 20  # per problem class, only a member's latest episodes count: nobody can outvote the rest
 MAX_TRIALS = 50
 EXPLORE_RATIO = 8.0  # an untried method is explored first only if predicted to cost at most this many times the cheapest
 MAX_PROBLEM_CHARS = 4000
@@ -135,7 +139,11 @@ def clean_episode(episode) -> dict:
     time = episode.get("time")
     if time is not None and not (isinstance(time, str) and len(time) <= 40):
         raise ValueError("bad time")
+    member = episode.get("member")
+    if member is not None and not (isinstance(member, str) and _MEMBER.fullmatch(member)):
+        member = None
     return {
+        "member": member,
         "id": episode_id(episode),
         "time": time,
         "signature": signature,
@@ -206,20 +214,31 @@ class ExperienceStore:
     def stats(self, signature: str, tags: Iterable[str] | None = None) -> dict[str, MethodStats]:
         """Per-method record for a problem class; with ``tags``, only episodes with
         the same feature tags, when there are any (otherwise the whole class)."""
-        episodes = [ep for ep in self.episodes + self.shared if ep.get("signature") == signature]
+        local = [(ep, 1.0) for ep in self.episodes if ep.get("signature") == signature]
+        per_member: dict[str, list[dict]] = {}
+        for ep in self.shared:
+            if ep.get("signature") == signature:
+                per_member.setdefault(ep.get("member") or "", []).append(ep)
+        shared = [(ep, SHARED_WEIGHT) for eps in per_member.values() for ep in eps[-MAX_PER_MEMBER:]]
+        episodes = local + shared
         if tags is not None:
             wanted = sorted(set(tags))
-            same = [ep for ep in episodes if sorted(set(ep.get("tags") or [])) == wanted]
+            same = [item for item in episodes if sorted(set(item[0].get("tags") or [])) == wanted]
             episodes = same or episodes
         table: dict[str, MethodStats] = {}
-        for ep in episodes:
+        for ep, weight in episodes:
             for trial in ep.get("methods", []):
+                if trial.get("outcome") == "skipped":  # never run: says nothing about the method
+                    continue
                 st = table.setdefault(trial["method"], MethodStats(trial["method"]))
-                st.tries += 1
+                st.tries += weight
                 if trial.get("outcome") == "success":
-                    st.successes += 1
+                    st.successes += weight
                     st.work.append(float(trial.get("work") or 0.0))
-                    st.grids.append((float(ep.get("tol", 0.0)), int(trial["n"]), trial.get("error_kind", "exact")))
+                    grid = (float(ep.get("tol", 0.0)), int(trial["n"]), trial.get("error_kind", "exact"))
+                    st.grids.append(grid)
+                    if weight == 1.0:
+                        st.local_grids.append(grid)
         return table
 
     def rank(self, signature: str, candidates: Iterable[SolverSpec], explore: bool = True,
@@ -265,8 +284,9 @@ class ExperienceStore:
         if not st or not st.grids:
             return None
         order = max(spec.order, 0.5)
-        recent = [(t, n) for t, n, kind in st.grids[-5:] if kind == error_kind and t > 0] or [
-            (t, n) for t, n, _ in st.grids[-5:] if t > 0
+        grids = st.local_grids or st.grids  # our own grids when there are any: another computer may run other code
+        recent = [(t, n) for t, n, kind in grids[-5:] if kind == error_kind and t > 0] or [
+            (t, n) for t, n, _ in grids[-5:] if t > 0
         ]
         if not recent:
             return None

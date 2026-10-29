@@ -213,7 +213,9 @@ class Brain:
         for attempt in range(attempts):
             data, content = self.complete_json(system, messages, PROBLEM_SCHEMA, effort="medium", example=PROBLEM_EXAMPLE)
             try:
-                return ParsedProblem(problem=problem_from_reply(data), notes=data.get("notes", ""), raw=data)
+                problem = problem_from_reply(data)
+                equations.complete(problem)  # a coefficient the known equation does not have: ask again
+                return ParsedProblem(problem=problem, notes=data.get("notes", ""), raw=data)
             except (ValueError, KeyError, TypeError) as exc:
                 if attempt + 1 == attempts:
                     raise LLMError(f"could not build a valid problem: {exc}") from exc

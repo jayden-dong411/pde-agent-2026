@@ -96,8 +96,9 @@ def _boundary_interpolant(exact: sp.Expr, domain: list[tuple[float, float]]) -> 
     """Dirichlet data that match ``exact`` on the boundary and ignore its interior.
 
     Linear interpolation between the two end values in 1-D, a Coons patch over
-    the four edges in 2-D. 3-D has no such blend and returns ``exact`` itself
-    (a known limitation).
+    the four edges in 2-D. In 3-D ``exact`` itself is returned, and that leaks
+    nothing: expressions cannot use ``z``, so ``exact`` is the same on every
+    plane z = const and the faces z = c and z = d already hold all of it.
     """
     if len(domain) == 3:
         return exact

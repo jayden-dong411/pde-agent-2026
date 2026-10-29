@@ -39,6 +39,8 @@ from .solvers import builtin_registry
 from .solvers.base import SolveResult, SolverDiverged, SolverSpec
 from .verify import exact_error, relative_error, resolution_floor, restrict
 
+ROUGH_SAFETY = 2.0  # an estimated error on non-smooth data must be below tol / ROUGH_SAFETY
+
 # for ODEs (dim 0) n is the number of time steps, or sets the tolerance of an adaptive method
 BASE_N = {0: 16, 1: 16, 2: 8, 3: 4}
 MAX_N = {0: 2**20, 1: 4096, 2: 256, 3: 64}
@@ -50,6 +52,7 @@ OUTCOMES = {
     "stagnated": "加密后误差不再下降",
     "max_n": "网格加到上限仍未达到精度",
     "budget": "用完计算预算",
+    "skipped": "按题目特征判断达不到精度，没有运行",
 }
 
 
@@ -132,6 +135,30 @@ class SolveReport:
         return f"{name}：未成功，{self.message}{extra}"
 
 
+def observed_rate(d_prev: float, d: float, r_prev: float, r: float) -> float | None:
+    """Order p from two successive differences of nested solutions with refinement ratios r_prev, r.
+
+    With error C n^-p, ``d_prev / d = r_prev^p (1 - r_prev^-p) / (1 - r^-p)``; solved for p by
+    bisection on [0.1, 12] (equal ratios give the textbook ``log(d_prev / d) / log(r)``).
+    """
+    if not (d_prev > 0 and d > 0 and r_prev > 1 and r > 1):
+        return None
+    target = math.log(d_prev / d)
+
+    def gap(p: float) -> float:
+        return p * math.log(r_prev) + math.log1p(-r_prev**-p) - math.log1p(-r**-p) - target
+
+    lo, hi = 0.1, 12.0
+    if gap(lo) > 0:
+        return lo
+    if gap(hi) < 0:
+        return hi
+    for _ in range(60):
+        mid = 0.5 * (lo + hi)
+        lo, hi = (mid, hi) if gap(mid) < 0 else (lo, mid)
+    return 0.5 * (lo + hi)
+
+
 class PDEAgent:
     def __init__(
         self,
@@ -212,6 +239,8 @@ class PDEAgent:
         """Have the language model write a new method for this problem class and admit it if it passes."""
         if self.brain is None:
             raise RuntimeError("learning new methods needs a language model (ClaudeBrain or DeepSeekBrain)")
+        if problem.dim == 0:  # skills are written for grids; ODE methods are built in only, for now
+            return LearnOutcome(False, message="常微分方程暂时不支持让大模型学习新方法，只能用内置方法")
         task = SkillTask.from_problem(problem, self.equations, self.registry, reason)
         if task.new_equation:  # the exam checks the skill against this text, so it has to be readable first
             try:
@@ -252,6 +281,12 @@ class PDEAgent:
         for spec in self.memory.rank(report.problem.signature(), candidates, self.explore, predicted, tags):
             if time.monotonic() > deadline:
                 break
+            prediction = report.predictions.get(spec.name)
+            if prediction is not None and prediction.work == math.inf:
+                # stability or ringing rules it out on every grid up to MAX_N: running it only risks a wrong answer
+                report.trials.append({"method": spec.name, "outcome": "skipped", "n": None, "error": None,
+                                      "error_kind": report.error_kind, "work": 0.0})
+                continue
             outcome, n, error, work = self._try_method(spec, report, options, deadline)
             report.trials.append({
                 "method": spec.name, "outcome": outcome, "n": n, "error": error,
@@ -274,6 +309,13 @@ class PDEAgent:
             n //= 2  # the estimate needs a coarser companion solution
         n = min(max(4, report.min_n, n), max_n // 2 if estimated else max_n)
 
+        # an estimate on rough data is least trustworthy (the error is not yet asymptotic): it has to beat tol by a margin
+        rough = estimated and report.features is not None and not report.features.smooth
+        target = tol / ROUGH_SAFETY if rough else tol
+        # an adaptive method's error does not shrink smoothly with its tolerance (it can stall for a step, then
+        # drop): its estimate is the plain difference, and it has to hold on two refinements in a row
+        adaptive = estimated and "adaptive" in spec.traits
+        confirmed = False
         prev: SolveResult | None = None
         prev_error = prev_diff = prev_ratio = None
         error, work = None, 0.0
@@ -290,32 +332,40 @@ class PDEAgent:
                 return "error", n, None, work
             work += result.work
 
-            order = spec.order
+            # rough data cost a method its claimed order: the estimate uses the features' order too
+            order = min(spec.order, prediction.order) if prediction else spec.order
+            if adaptive:
+                order = 1.0
             if not estimated:
                 error = exact_error(problem, result)
             elif prev is not None:
                 ratio = n / prev.n
                 diff = relative_error(prev.u, restrict(result, prev.n))
-                if prev_diff and diff > 0 and prev_ratio == ratio:
-                    # trust the observed rate when it is lower than claimed
-                    order = min(order, max(0.5, math.log(prev_diff / diff) / math.log(ratio)))
+                if prev_diff and diff > 0:
+                    # trust the observed rate when it is lower than claimed (the refinement ratios may differ)
+                    seen = None if adaptive else observed_rate(prev_diff, diff, prev_ratio, ratio)
+                    if seen is not None:
+                        order = min(order, max(0.5, seen))
                 error = diff / (ratio**order - 1.0)
                 prev_diff, prev_ratio = diff, ratio
             report.attempts.append(Attempt(
                 spec.name, n, "ok" if error is not None else "unverified", error, result.work, result.runtime,
             ))
 
-            if error is not None and (report.error is None or error < report.error or error <= tol):
+            met = error is not None and error <= target and (confirmed or not adaptive)
+            if adaptive:
+                confirmed = error is not None and error <= target
+            if error is not None and (report.error is None or error < report.error or met):
                 report.result, report.error, report.n, report.method = result, error, n, spec.name
-            if error is not None and error <= tol:
+            if met:
                 report.success = True
                 return "success", n, error, work
-            if error is not None and prev_error is not None and error > 0.8 * prev_error:
+            if error is not None and prev_error is not None and error > 0.8 * prev_error and not adaptive:
                 return "stagnated", n, error, work
             if n >= max_n:
                 return "max_n", n, error, work
             prev, prev_error = result, error if error is not None else prev_error
-            n = min(self._next_n(n, error, tol, order), max_n)
+            n = min(self._next_n(n, error, target, order), max_n)
         return "budget", n, error, work
 
     @staticmethod

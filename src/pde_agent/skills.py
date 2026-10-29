@@ -38,7 +38,10 @@ from .verify import convergence_study
 
 TEMPLATE = Path(__file__).parent / "templates" / "reaction_diffusion_skill.py"
 
-ALLOWED_IMPORTS = {"numpy", "scipy", "sympy", "math", "pde_agent", "functools", "itertools", "typing", "__future__"}
+ALLOWED_IMPORTS = {"numpy", "scipy", "sympy", "math", "functools", "itertools", "typing", "__future__"}
+# of the package itself only the helper surface: other modules import os and subprocess, which a skill
+# could otherwise pick up with "from pde_agent.skills import subprocess"
+PACKAGE_IMPORTS = {"pde_agent.skill_api"}
 FORBIDDEN_NAMES = {
     "open", "exec", "eval", "compile", "__import__", "globals", "locals", "vars",
     "getattr", "setattr", "delattr", "input", "breakpoint", "exit", "quit", "help",
@@ -158,14 +161,25 @@ def static_check(code: str) -> list[str]:
     problems = []
     for node in ast.walk(tree):
         if isinstance(node, ast.Import):
-            roots = [alias.name.split(".")[0] for alias in node.names]
+            modules = [alias.name for alias in node.names]
+            for alias in node.names:
+                if alias.name.startswith("pde_agent") and alias.asname is None:
+                    # "import pde_agent.skill_api" binds the package, and through it every loaded module
+                    problems.append(f"line {node.lineno}: write 'from pde_agent.skill_api import ...' instead")
         elif isinstance(node, ast.ImportFrom):
-            roots = [(node.module or "").split(".")[0]] if node.level == 0 else ["<relative>"]
+            if node.level:
+                modules = ["<relative>"]
+            elif node.module == "pde_agent":  # from pde_agent import skill_api
+                modules = [f"pde_agent.{alias.name}" for alias in node.names]
+            else:
+                modules = [node.module or ""]
         else:
-            roots = []
-        for root in roots:
-            if root not in ALLOWED_IMPORTS:
-                problems.append(f"line {node.lineno}: import of {root!r} is not allowed")
+            modules = []
+        for module in modules:
+            root = module.split(".")[0]
+            allowed = module in PACKAGE_IMPORTS if root == "pde_agent" else root in ALLOWED_IMPORTS
+            if not allowed:
+                problems.append(f"line {node.lineno}: import of {module!r} is not allowed")
         if isinstance(node, ast.Name) and node.id in FORBIDDEN_NAMES:
             problems.append(f"line {node.lineno}: use of {node.id!r} is not allowed")
         if isinstance(node, ast.Attribute) and (node.attr.startswith("_") or node.attr in FORBIDDEN_ATTRIBUTES):
@@ -469,6 +483,10 @@ class SkillLibrary:
                 errors.append(f"技能 {path.name} 已停用：{manifest['disabled']}")
                 continue
             try:
+                problems = static_check(path.read_text(encoding="utf-8"))
+                if problems:  # admitted under an older, looser check, or edited since: checked again every start
+                    errors.append(f"技能 {path.name} 加载失败：静态检查不通过：{'；'.join(problems[:3])}")
+                    continue
                 if int(manifest.get("exam_version", 1)) < EXAM_VERSION:
                     task = SkillTask.from_dict(manifest["task"]) if manifest.get("task") else None
                     tests = [case["exact"] for case in manifest.get("validation", {}).get("cases", [])]

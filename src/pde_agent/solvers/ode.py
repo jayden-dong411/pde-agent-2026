@@ -86,18 +86,18 @@ def solve_verlet(problem, n: int, options: dict) -> SolveResult:
     half, h = problem.size // 2, problem.t_final / n
     y = problem.y0.copy()
     limit = growth_limit(y, problem.f(0.0, y))
-    force = problem.f(0.0, y)[half:]
+    force = problem.f_half(0.0, y, second=True)
     with np.errstate(all="ignore"):
         for k in range(n):
             y[half:] += 0.5 * h * force
-            y[:half] += h * problem.f(0.0, y)[:half]
-            force = problem.f(0.0, y)[half:]
+            y[:half] += h * problem.f_half(0.0, y, second=False)
+            force = problem.f_half(0.0, y, second=True)
             y[half:] += 0.5 * h * force
             if k % 64 == 0:
                 check_growth(y, limit, "ode.verlet", k)
     check_growth(y, limit, "ode.verlet", n)
     counts = new_counts()
-    counts["f"] = n  # two half evaluations per step
+    counts["f"] = n  # two half evaluations per step, each of half the components
     return _result(problem, y, n, counts)
 
 

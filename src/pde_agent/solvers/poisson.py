@@ -32,6 +32,8 @@ def laplacian_matrix(m: int, hs: tuple[float, ...]) -> sparse.csc_matrix:
 
 def solve_fd(problem: PDEProblem, n: int, options: dict) -> SolveResult:
     k = problem.coefficients.get("k", 1.0)
+    if k == 0:
+        raise ValueError("Poisson equation needs k != 0")
     axes = grid(problem, n)
     points = mesh(axes)
     hs = tuple(float(ax[1] - ax[0]) for ax in axes)

@@ -10,7 +10,10 @@ One call to ``solve`` is an episode:
 3. solve on a grid predicted from experience (or from the features), but never
    below the resolution floor, the first grid that resolves the problem's data
    (a problem no grid resolves is reported, not solved),
-4. measure the error (exact solution) or estimate it (grid refinement),
+4. measure the error (exact solution) or estimate it (grid refinement); an
+   estimate that meets the tolerance is cross-checked (``crosscheck.py``:
+   residual spot check, mass and energy drift), and an answer that fails the
+   cross-check gets one more refinement before the method is given up,
 5. refine until the tolerance is met, or move to the next method when a
    method blows up, stagnates or runs out of budget,
 6. append the whole episode to the experience memory.
@@ -29,6 +32,7 @@ import time
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from .crosscheck import CrossCheck, cross_check
 from .equations import builtin_equations, operator_from_text
 from .features import Prediction, ProblemFeatures, extract, predict
 from .llm import LLMError
@@ -36,7 +40,7 @@ from .memory import ExperienceStore
 from .problem import PDEProblem
 from .skills import SkillLibrary, SkillTask, ValidationReport, validate_candidate
 from .solvers import builtin_registry
-from .solvers.base import SolveResult, SolverDiverged, SolverSpec
+from .solvers.base import SolverDiverged, SolveResult, SolverSpec
 from .verify import exact_error, relative_error, resolution_floor, restrict
 
 ROUGH_SAFETY = 2.0  # an estimated error on non-smooth data must be below tol / ROUGH_SAFETY
@@ -53,7 +57,9 @@ OUTCOMES = {
     "max_n": "网格加到上限仍未达到精度",
     "budget": "用完计算预算",
     "skipped": "按题目特征判断达不到精度，没有运行",
+    "crosscheck": "误差估计达标，但交叉验证没通过",
 }
+CROSSCHECK_RETRIES = 1  # refinements after a failed cross-check before the method is given up
 
 
 def default_home() -> Path:
@@ -97,6 +103,8 @@ class SolveReport:
     min_n: int = 0  # resolution floor: the first grid that resolves the problem's data (0 if no grid does)
     features: ProblemFeatures | None = None
     predictions: dict[str, Prediction] = field(default_factory=dict)
+    crosscheck: CrossCheck | None = None  # of the answer (estimated errors only)
+    check_work: float = 0.0  # work of the extra runs the cross-checks needed
 
     @property
     def solver_runs(self) -> int:
@@ -104,7 +112,7 @@ class SolveReport:
 
     @property
     def work(self) -> float:
-        return sum(a.work for a in self.attempts)
+        return sum(a.work for a in self.attempts) + self.check_work
 
     @property
     def runtime(self) -> float:
@@ -130,9 +138,11 @@ class SolveReport:
         extra = f"，新学会 {', '.join(learned)}" if learned else ""
         if self.success:
             how = "对比精确解" if self.error_kind == "exact" else "加密网格估计"
+            checked = f"。{self.crosscheck.describe()}" if self.crosscheck and self.crosscheck.describe() else ""
             return (f"{name}：成功，方法 {self.method}，n={self.n}，误差 {self.error:.2e}（{how}），"
-                    f"求解 {self.solver_runs} 次{extra}")
-        return f"{name}：未成功，{self.message}{extra}"
+                    f"求解 {self.solver_runs} 次{extra}{checked}")
+        checked = f"。最后一次{self.crosscheck.describe()}" if self.crosscheck and self.crosscheck.checks else ""
+        return f"{name}：未成功，{self.message}{extra}{checked}"
 
 
 def observed_rate(d_prev: float, d: float, r_prev: float, r: float) -> float | None:
@@ -316,6 +326,7 @@ class PDEAgent:
         # drop): its estimate is the plain difference, and it has to hold on two refinements in a row
         adaptive = estimated and "adaptive" in spec.traits
         confirmed = False
+        retries = CROSSCHECK_RETRIES
         prev: SolveResult | None = None
         prev_error = prev_diff = prev_ratio = None
         error, work = None, 0.0
@@ -355,11 +366,28 @@ class PDEAgent:
             met = error is not None and error <= target and (confirmed or not adaptive)
             if adaptive:
                 confirmed = error is not None and error <= target
+            checked = None
+            if met and estimated:
+                # the estimate only sees how the answer changes on refinement: check the answer itself
+                checked = cross_check(self.equations.get(problem.kind), spec, problem, result, tol, options)
+                report.check_work += checked.work
+                work += checked.work
+                report.crosscheck = checked
+                if not checked.passed:
+                    met = False
+                    report.attempts[-1].message = checked.describe()
             if error is not None and (report.error is None or error < report.error or met):
                 report.result, report.error, report.n, report.method = result, error, n, spec.name
             if met:
                 report.success = True
                 return "success", n, error, work
+            if checked is not None and not checked.passed:
+                if retries <= 0 or n >= max_n:
+                    return "crosscheck", n, error, work
+                retries -= 1
+                prev, prev_error = result, error
+                n = min(2 * n, max_n)
+                continue
             if error is not None and prev_error is not None and error > 0.8 * prev_error and not adaptive:
                 return "stagnated", n, error, work
             if n >= max_n:
@@ -395,4 +423,5 @@ class PDEAgent:
             "learned": [o.solver for o in report.learned if o.success],
             "tags": list(report.features.tags) if report.features else [],
             "features": report.features.to_dict() if report.features else None,
+            "crosscheck": report.crosscheck.to_dict() if report.crosscheck else None,
         })

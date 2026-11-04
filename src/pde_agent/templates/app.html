@@ -825,6 +825,14 @@ function showReport(r) {
         el("div", { class: "step-line" }, el("b", {}, "按题目特征排方法")),
         el("div", { class: "step-note" }, r.choice))));
   }
+  if (r.crosscheck && (r.crosscheck.checks.length || r.crosscheck.text)) {
+    const cc = r.crosscheck;
+    steps.push(el("li", {},
+      el("span", { class: "num " + (cc.passed ? "ok" : "bad") }, "✓"),
+      el("div", { class: "step-body" },
+        el("div", { class: "step-line" }, el("b", {}, `交叉验证（没有精确解）：${cc.passed ? "通过" : "没通过"}`)),
+        el("div", { class: "step-note" }, cc.checks.length ? cc.checks.map(c => c.text).join("；") : cc.text))));
+  }
   for (const o of r.learned) {
     steps.push(el("li", {},
       el("span", { class: "num " + (o.success ? "ok" : "bad") }, "★"),

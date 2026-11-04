@@ -70,6 +70,10 @@ def report_json(report: SolveReport) -> dict:
         "runtime": round(report.runtime, 3),
         "message": report.message,
         "choice": report.choice(),
+        "crosscheck": ({**report.crosscheck.to_dict(), "text": report.crosscheck.describe(),
+                        "checks": [{**c.to_dict(), "value": _num(c.value), "text": c.describe()}
+                                   for c in report.crosscheck.checks]}
+                       if report.crosscheck else None),
         "trials": [{**t, "label": OUTCOMES.get(t["outcome"], t["outcome"]), "error": _num(t.get("error")),
                     "work": _num(t.get("work"))} for t in report.trials],
         "learned": [{"success": o.success, "solver": o.solver, "rounds": o.rounds, "message": o.message} for o in report.learned],

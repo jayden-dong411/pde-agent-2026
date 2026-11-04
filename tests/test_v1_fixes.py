@@ -189,15 +189,6 @@ def test_installed_skill_that_fails_the_static_check_is_not_loaded(tmp_path):
 # 6. ODEs and learning --------------------------------------------------------------------
 
 
-def test_learning_an_ode_method_says_it_is_not_supported(tmp_path):
-    class Brain:
-        provider = "fake"
-
-    outcome = PDEAgent(home=tmp_path, brain=Brain(), remember=False).learn(
-        ODEProblem(rhs=["-y1"], initial=["1"], t_final=1.0, equation="y' = -y"))
-    assert not outcome.success and "常微分方程" in outcome.message
-
-
 # speculative findings that were confirmed ------------------------------------------------
 
 

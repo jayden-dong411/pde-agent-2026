@@ -25,8 +25,13 @@ checks look at the answer itself instead:
   - energy ``½∫u_t² + ½∫u S(u)`` of a linear second order equation
     ``u_tt + S(u) = 0`` (waves) on periodic or zero boundaries.
 
-A check that does not apply (an ODE, 3-D, an operator sympy cannot handle) is
-left out, never failed. ``cross_check`` runs them all and says whether the
+* **independent integration** (ODEs): the final state is compared with a run
+  of a different, tightly toleranced adaptive integrator (DOP853 for non-stiff
+  problems, Radau or BDF for stiff ones). An ODE answer has no grid to
+  interpolate, but a second opinion from another method family is cheap.
+
+A check that does not apply (3-D, an operator sympy cannot handle) is left
+out, never failed. ``cross_check`` runs them all and says whether the
 answer passes.
 """
 
@@ -53,7 +58,12 @@ STEPS_APART = 2  # ... and, for a time-stepping solver, this many of its own ste
 PROBES = 400
 MARGIN = 0.05  # probes keep this fraction of each side away from the boundary
 
-CHECK_NAMES = {"residual": "残差抽查", "mass": "质量守恒", "energy": "能量守恒", "energy_decay": "能量不增"}
+ODE_FACTOR = 10.0  # the independent ODE run may differ by this multiple of tol (and never less than ODE_FLOOR)
+ODE_FLOOR = 1e-8
+ODE_STIFF = 50.0  # stiffness above which the reference run uses an implicit method
+
+CHECK_NAMES = {"residual": "残差抽查", "mass": "质量守恒", "energy": "能量守恒", "energy_decay": "能量不增",
+               "reference": "独立积分对照"}
 
 
 @dataclass
@@ -431,8 +441,7 @@ def cross_check(equation, spec: SolverSpec, problem: PDEProblem, result: SolveRe
     """All checks that apply to this answer. Never raises: a check that cannot run is left out."""
     out = CrossCheck()
     if problem.dim == 0:
-        out.skipped = "常微分方程"
-        return out
+        return ode_check(spec, problem, result, tol)
     if problem.dim == 3:
         out.skipped = "三维问题"
         return out
@@ -456,4 +465,37 @@ def cross_check(equation, spec: SolverSpec, problem: PDEProblem, result: SolveRe
     out.work = neighbours.work if neighbours else 0.0
     if not out.checks:
         out.skipped = "算子太特殊，没法代回检查"
+    return out
+
+
+def ode_check(spec: SolverSpec, problem, result: SolveResult, tol: float) -> CrossCheck:
+    """Compare an ODE answer at ``t_final`` with an independent adaptive run of another method family."""
+    from scipy.integrate import solve_ivp
+
+    out = CrossCheck()
+    try:
+        stiff = problem.stiffness() > ODE_STIFF
+    except Exception:
+        stiff = False
+    method = ("BDF" if spec.name == "ode.radau" else "Radau") if stiff else "DOP853"
+    rtol = min(1e-6, max(1e-12, tol * 1e-3))
+    scale = max(1.0, float(np.max(np.abs(problem.y0))))
+    try:
+        with np.errstate(all="ignore"):
+            sol = solve_ivp(problem.f, (0.0, problem.t_final), problem.y0, method=method, rtol=rtol,
+                            atol=rtol * scale * 1e-3, **({"jac": problem.jac} if stiff else {}))
+    except Exception as exc:
+        out.skipped = f"参考积分出错：{type(exc).__name__}"
+        return out
+    c = problem.costs
+    out.work = float(sol.nfev * c["f"] + getattr(sol, "njev", 0) * c["jac"] + getattr(sol, "nlu", 0) * c["lu"])
+    if not sol.success or not np.all(np.isfinite(sol.y[:, -1])):
+        out.skipped = "参考积分没有算完"
+        return out
+    reference = sol.y[:, -1]
+    size = float(np.max(np.abs(reference)))
+    diff = float(np.max(np.abs(np.asarray(result.u) - reference)))
+    value = diff / size if size > 1e-12 else diff
+    limit = max(ODE_FACTOR * tol, ODE_FLOOR)
+    out.checks.append(Check("reference", value, limit, bool(value <= limit), f"参考方法 {method}，rtol = {rtol:.0e}"))
     return out

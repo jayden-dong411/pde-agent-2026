@@ -21,8 +21,9 @@ import numpy as np
 
 from . import __version__
 from .agent import OUTCOMES, PDEAgent, SolveReport
-from .curriculum import basic_curriculum, frontier_lessons
+from .curriculum import basic_curriculum, frontier_lessons, ode_curriculum
 from .llm import PROVIDERS, LLMError
+from .ode import ODEProblem
 from .problem import PDEProblem
 from .cloud import CloudError, HubClient, SyncState, sync
 from .settings import DEFAULT_MODELS, MODELS, Settings, key_hint
@@ -30,6 +31,8 @@ from .verify import exact_values
 
 PAGE = Path(__file__).parent / "templates" / "app.html"
 MAX_POINTS = 129  # per axis in the plotted solution
+ODE_POINTS = 241  # times in a plotted ODE trajectory
+ODE_CURVES = 8  # components drawn at most
 
 
 class RequestError(Exception):
@@ -81,7 +84,9 @@ def report_json(report: SolveReport) -> dict:
         "solution": None,
     }
     result = report.result
-    if result is not None:
+    if result is not None and report.problem.dim == 0:
+        data["solution"] = ode_solution_json(report.problem, result, report.tol)
+    elif result is not None:
         picks = [_thin(axis) for axis in result.grid]
         solution = {
             "dim": len(result.grid),
@@ -96,9 +101,90 @@ def report_json(report: SolveReport) -> dict:
     return data
 
 
-def problem_from_form(payload: dict) -> PDEProblem:
+def ode_trajectory(problem: ODEProblem, tol: float = 1e-3) -> dict | None:
+    """y(t) on [0, t_final] for the plot, from scipy's LSODA (switches between stiff and non-stiff by itself).
+
+    The agent's methods only return the state at the final time; the curve is drawn from this
+    reference run, and the agent's answer is shown as the end point.
+    """
+    from scipy.integrate import solve_ivp
+
+    times = np.linspace(0.0, problem.t_final, ODE_POINTS)
+    rtol = min(1e-6, tol * 1e-2)
+    scale = max(1.0, float(np.max(np.abs(problem.y0))))
+    try:
+        with np.errstate(all="ignore"):
+            sol = solve_ivp(problem.f, (0.0, problem.t_final), problem.y0, method="LSODA", t_eval=times,
+                            jac=problem.jac, rtol=rtol, atol=rtol * scale * 1e-3)
+    except Exception:
+        return None
+    if not sol.success or sol.y.shape[1] != len(times) or not np.all(np.isfinite(sol.y)):
+        return None
+    return {"t": times.tolist(), "y": sol.y[:ODE_CURVES].tolist()}
+
+
+def ode_solution_json(problem: ODEProblem, result, tol: float) -> dict:
+    solution: dict[str, Any] = {
+        "dim": 0, "t": problem.t_final, "u": [float(v) if math.isfinite(v) else None for v in np.asarray(result.u)],
+        "names": [f"y{i + 1}" for i in range(problem.size)], "exact": None, "trajectory": ode_trajectory(problem, tol),
+        "exact_curves": None,
+    }
+    if problem.has_exact():
+        solution["exact"] = problem.exact_at(problem.t_final).tolist()
+        solution["exact_curves"] = _exact_curves(problem)
+    return solution
+
+
+def _exact_curves(problem: ODEProblem) -> dict | None:
+    times = np.linspace(0.0, problem.t_final, ODE_POINTS)
+    try:
+        values = np.array([problem.exact_at(t) for t in times]).T[:ODE_CURVES]
+    except (ValueError, TypeError, ArithmeticError):
+        return None
+    if not np.all(np.isfinite(values)):
+        return None
+    return {"t": times.tolist(), "y": values.tolist()}
+
+
+def _lines(value: Any) -> list[str]:
+    """A list of expressions from the form: a list, or text with one per line (or separated by ;)."""
+    if isinstance(value, (list, tuple)):
+        items = [str(v) for v in value]
+    else:
+        items = str(value or "").replace(";", "\n").replace("；", "\n").splitlines()
+    out = []
+    for item in items:
+        item = item.strip()
+        if not item:
+            continue
+        # "y1' = ...", "dy1/dt = ..." or "y1(0) = 1": keep what follows the =
+        if "=" in item:
+            item = item.split("=", 1)[1].strip()
+        out.append(item)
+    return out
+
+
+def ode_from_form(data: dict) -> ODEProblem:
+    rhs = _lines(data.get("rhs"))
+    if not rhs:
+        raise RequestError("题目有误：请填写方程组，每行一个，例如 y1' = y2")
+    initial = data.get("initial")
+    initial = _lines(initial.replace(",", ";").replace("，", ";") if isinstance(initial, str) else initial)
+    exact = _lines(data.get("exact")) or None
+    try:
+        return ODEProblem(rhs=rhs, initial=initial, t_final=float(data.get("t_final") or 0.0),
+                          coefficients=dict(data.get("coefficients") or {}), exact=exact,
+                          equation=str(data.get("equation") or ""), name=str(data.get("name") or ""),
+                          description=str(data.get("description") or ""))
+    except (TypeError, ValueError, KeyError) as exc:
+        raise RequestError(f"题目有误：{exc}") from exc
+
+
+def problem_from_form(payload: dict) -> PDEProblem | ODEProblem:
     """Build a problem from the page's form (raises RequestError when invalid)."""
     data = dict(payload.get("problem") or {})
+    if str(data.get("kind") or "").strip() == "ode":
+        return ode_from_form(data)
     for key in ("boundary_value", "initial", "initial_velocity", "exact"):
         if not str(data.get(key) or "").strip():
             data[key] = None
@@ -117,7 +203,7 @@ CHAT_SYSTEM = """你是这个偏微分方程求解程序网页里的数学助手
 - 用中文回答，先给结论，再给关键步骤；计算题要写出过程并检查结果。
 - 页面不能显示 LaTeX。公式用纯文本和 Unicode 写，比如 x² + y² = r²、∫₀¹ f(x) dx、∂u/∂t、√2、≤、→、∑ₖ aₖ；需要对齐的推导可以放进 ``` 代码块。
 - 可以用 **加粗**、列表和小标题，不要用表格和图片。
-- 如果用户要数值求解一个偏微分方程，告诉他用页面上方的“求解”面板。
+- 如果用户要数值求解一个偏微分方程或常微分方程（组），告诉他用页面上方的“求解”面板。
 - 和数学无关的问题，礼貌地说明这里只回答数学问题。"""
 CHAT_TURNS = 20  # messages of history sent to the model
 CHAT_CHARS = 8000  # per message
@@ -126,8 +212,17 @@ CHAT_TOTAL = 40000
 PREVIEW_POINTS = (129, 65)  # per axis for 1-D and 2-D previews
 
 
-def preview_json(problem: PDEProblem) -> dict:
+def preview_json(problem: PDEProblem | ODEProblem) -> dict:
     """The known fields of a problem on a grid, drawn before solving."""
+    if problem.dim == 0:  # an ODE: only an exact solution can be drawn before solving
+        data: dict[str, Any] = {"dim": 0, "axes": [], "curves": [], "names": [f"y{i + 1}" for i in range(problem.size)]}
+        if problem.has_exact():
+            curves = _exact_curves(problem)
+            if curves:
+                data["axes"] = [curves["t"]]
+                data["curves"] = [{"field": "exact", "label": f"精确解 y{i + 1}(t)", "t": problem.t_final, "values": v}
+                                  for i, v in enumerate(curves["y"])]
+        return data
     dim = len(problem.domain)
     data: dict[str, Any] = {"dim": dim, "axes": [], "curves": []}
     if dim > 2:
@@ -251,7 +346,7 @@ class AppState:
             "examples": [
                 {"name": lesson.name, "title": lesson.title, "level": lesson.level, "tol": lesson.tol,
                  "problem": lesson.problem.to_dict()}
-                for lesson in basic_curriculum() + frontier_lessons()
+                for lesson in basic_curriculum() + frontier_lessons() + ode_curriculum()
             ],
         }
 

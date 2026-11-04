@@ -213,7 +213,7 @@ class PDEAgent:
         report.min_n = floor
         report.features = extract(problem, floor)
         candidates = self.registry.for_problem(problem)
-        can_learn = learn and self.brain is not None and problem.dim > 0  # skills are written for grids
+        can_learn = learn and self.brain is not None
 
         if not candidates and can_learn:
             outcome = self.learn(problem, reason="no method covers this problem class yet")
@@ -249,8 +249,6 @@ class PDEAgent:
         """Have the language model write a new method for this problem class and admit it if it passes."""
         if self.brain is None:
             raise RuntimeError("learning new methods needs a language model (ClaudeBrain or DeepSeekBrain)")
-        if problem.dim == 0:  # skills are written for grids; ODE methods are built in only, for now
-            return LearnOutcome(False, message="常微分方程暂时不支持让大模型学习新方法，只能用内置方法")
         task = SkillTask.from_problem(problem, self.equations, self.registry, reason)
         if task.new_equation:  # the exam checks the skill against this text, so it has to be readable first
             try:

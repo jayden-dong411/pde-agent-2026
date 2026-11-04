@@ -9,6 +9,12 @@ that defines ``SOLVER`` + ``solve`` and, for a new kind of equation,
 2. a numerical exam in a separate process: on manufactured problems with
    known solutions the error has to shrink at the order the skill claims.
 
+ODE skills (``kind`` "ode", for ``y' = f(t, y)``) take the same exam on ODE
+systems with 32, 64 and 128 steps: two standard ones with exact solutions
+(logistic growth, an oscillator) and the task's own system on at most
+``[0, 2]``, against a tightly toleranced Radau run, so the test keeps the
+task's stiffness and nonlinearity.
+
 The static check and the separate process limit accidents; they are not a
 security sandbox. Learned code runs on this machine, so review skills you
 keep and run the agent where that is acceptable.
@@ -31,12 +37,15 @@ from datetime import datetime, timezone
 from pathlib import Path
 from types import ModuleType
 
+import numpy as np
+
 from .equations import Equation, EquationBook, builtin_equations, check_operator, manufactured_problem
 from .problem import BOUNDARY_KINDS, PDEProblem, parse_expr
 from .solvers.base import SolverRegistry, SolverSpec
 from .verify import convergence_study
 
 TEMPLATE = Path(__file__).parent / "templates" / "reaction_diffusion_skill.py"
+ODE_TEMPLATE = Path(__file__).parent / "templates" / "ode_skill.py"
 
 ALLOWED_IMPORTS = {"numpy", "scipy", "sympy", "math", "functools", "itertools", "typing", "__future__"}
 # of the package itself only the helper surface: other modules import os and subprocess, which a skill
@@ -51,7 +60,7 @@ FORBIDDEN_ATTRIBUTES = {
     "fromfile", "tofile", "memmap", "ctypeslib", "system", "popen", "DataSource",
 }
 
-STUDY_GRIDS = {1: [16, 32, 64], 2: [8, 16, 32], 3: [4, 8, 16]}
+STUDY_GRIDS = {0: [32, 64, 128], 1: [16, 32, 64], 2: [8, 16, 32], 3: [4, 8, 16]}  # dim 0: ODE time steps
 EXAM_VERSION = 2  # raise when the exam gets stricter: installed skills with an older version are examined again
 MAX_FINAL_ERROR = 5e-2
 _SOLVER_NAME = re.compile(r"[a-z][a-z0-9_]*\.[a-z][a-z0-9_]*")
@@ -79,11 +88,31 @@ class SkillTask:
     new_equation: bool
     existing_methods: list[dict] = field(default_factory=list)
     reason: str = ""
+    rhs: list[str] | None = None  # ODE tasks: the right-hand side and initial values the exam builds tests from
+    initial: list[str] | None = None
+    stiffness: float | None = None
 
     @classmethod
     def from_problem(
         cls, problem: PDEProblem, equations: EquationBook, registry: SolverRegistry, reason: str = ""
     ) -> SkillTask:
+        if problem.kind == "ode":
+            try:
+                stiffness = round(float(problem.stiffness()), 3)
+            except Exception:
+                stiffness = None
+            return cls(
+                kind="ode", dim=0, boundary="ivp",
+                equation="; ".join(f"y{i + 1}' = {e}" for i, e in enumerate(problem.rhs)),
+                coefficients=dict(problem.coefficients), domain=[], t_final=problem.t_final, time_order=1,
+                new_equation=False,
+                existing_methods=[
+                    {"name": s.name, "order": s.order, "dims": list(s.dims), "boundaries": list(s.boundaries),
+                     "description": s.description}
+                    for s in registry if s.kind == "ode"
+                ],
+                reason=reason, rhs=list(problem.rhs), initial=list(problem.initial), stiffness=stiffness,
+            )
         eq = equations.get(problem.kind)
         if eq is not None:
             time_order = eq.time_order
@@ -249,11 +278,15 @@ def solver_from_module(module: ModuleType) -> SolverSpec:
     if name.split(".")[0] != kind:
         raise ValueError("SOLVER name must start with its kind")
     dims = tuple(int(d) for d in data.get("dims", ()))
-    if not dims or any(d not in (1, 2, 3) for d in dims):
-        raise ValueError("SOLVER dims must be a non-empty list drawn from 1, 2, 3")
     boundaries = tuple(str(b) for b in data.get("boundaries", ()))
-    if not boundaries or any(b not in BOUNDARY_KINDS for b in boundaries):
-        raise ValueError(f"SOLVER boundaries must be drawn from {BOUNDARY_KINDS}")
+    if kind == "ode":  # y' = f(t, y): no space, an initial value problem
+        if dims != (0,) or boundaries != ("ivp",):
+            raise ValueError('an ODE SOLVER has "dims": [0] and "boundaries": ["ivp"]')
+    else:
+        if not dims or any(d not in (1, 2, 3) for d in dims):
+            raise ValueError("SOLVER dims must be a non-empty list drawn from 1, 2, 3")
+        if not boundaries or any(b not in BOUNDARY_KINDS for b in boundaries):
+            raise ValueError(f"SOLVER boundaries must be drawn from {BOUNDARY_KINDS}")
     order = float(data.get("order", 0))
     if not (math.isfinite(order) and order > 0):
         raise ValueError("SOLVER order must be positive")
@@ -292,6 +325,8 @@ def run_exam(module: ModuleType, task: SkillTask | None, test_solutions: list[st
         spec = solver_from_module(module)
     except Exception as exc:  # malformed module metadata
         return ValidationReport(ok=False, message=f"invalid skill definition: {exc}")
+    if spec.kind == "ode" or (task is not None and task.kind == "ode"):
+        return run_ode_exam(spec, equation, task)
 
     book = builtin_equations()
     if equation is not None:
@@ -350,21 +385,122 @@ def run_exam(module: ModuleType, task: SkillTask | None, test_solutions: list[st
             problem = manufactured_problem(eq, exact, domain, t_final, coefficients, boundary)
             study = convergence_study(spec, problem, ns)
         except Exception as exc:
-            case["error"] = "".join(traceback.format_exception_only(type(exc), exc)).strip()[-600:]
-            report.message = "the solver raised an error on a test problem"
+            return _crashed(report, case, exc)
+        if not _graded(report, case, study, spec):
             return report
-        case["errors"], case["orders"] = study.errors, study.orders
-        final_error, final_order = study.errors[-1], study.final_order
-        if not math.isfinite(final_error) or final_error > MAX_FINAL_ERROR:
-            report.message = f"error on the finest grid is {final_error:.3e} (needs <= {MAX_FINAL_ERROR})"
-            return report
-        if final_error > 1e-10:  # below this the scheme is exact up to round-off
-            needed = max(0.8, 0.7 * spec.order)
-            if final_order is None or final_order < needed:
-                report.message = f"observed order {final_order} is below {needed:.2f} (claimed order {spec.order})"
-                return report
     report.ok = True
     report.message = f"passed {len(report.cases)} manufactured-solution tests"
+    return report
+
+
+def _crashed(report: ValidationReport, case: dict, exc: Exception) -> ValidationReport:
+    case["error"] = "".join(traceback.format_exception_only(type(exc), exc)).strip()[-600:]
+    report.message = "the solver raised an error on a test problem"
+    return report
+
+
+def _graded(report: ValidationReport, case: dict, study, spec: SolverSpec, overall: bool = False) -> bool:
+    """Record one convergence study; False (with the reason in ``report.message``) if it fails.
+
+    ``overall``: judge the order from the first to the last run instead of the last pair (ODE methods
+    with adaptive steps do not converge evenly in their tolerance knob).
+    """
+    case["errors"], case["orders"] = study.errors, study.orders
+    final_error, final_order = study.errors[-1], study.final_order
+    if overall and len(study.errors) > 1 and study.errors[0] > 0 and final_error > 0:
+        final_order = math.log(study.errors[0] / final_error) / math.log(study.ns[-1] / study.ns[0])
+    if not math.isfinite(final_error) or final_error > MAX_FINAL_ERROR:
+        report.message = f"error on the finest grid is {final_error:.3e} (needs <= {MAX_FINAL_ERROR})"
+        return False
+    if final_error > 1e-10:  # below this the scheme is exact up to round-off
+        needed = max(0.8, 0.7 * spec.order)
+        if final_order is None or final_order < needed:
+            report.message = f"observed order {final_order} is below {needed:.2f} (claimed order {spec.order})"
+            return False
+    return True
+
+
+# --- the ODE exam -----------------------------------------------------------------
+
+ODE_STANDARD_TESTS = [  # (rhs, initial, t_final, exact)
+    (["y1*(1 - y1)"], ["0.5"], 2.0, ["1/(1 + exp(-t))"]),
+    (["y2", "-y1"], ["1", "0"], 2.0, ["cos(t)", "-sin(t)"]),
+]
+
+
+ODE_TEST_SPAN = 2.0
+ODE_REFERENCE_RTOL = 1e-10
+
+
+def ode_test_problems(task: SkillTask | None) -> list[tuple]:
+    """``(problem, reference)`` pairs: the standard tests (exact solutions, reference None) and the task's own
+    problem on at most ``[0, 2]`` with a tight Radau run as the reference (when the task has one)."""
+    from .ode import ODEProblem
+
+    tests = [(ODEProblem(rhs=r, initial=i, t_final=tf, exact=e, name="standard"), None)
+             for r, i, tf, e in ODE_STANDARD_TESTS]
+    if task is None or not task.rhs or not task.initial or not task.t_final:
+        return tests
+    try:
+        # a long horizon would need more steps than the exam takes
+        problem = ODEProblem(rhs=task.rhs, initial=task.initial, t_final=min(task.t_final, ODE_TEST_SPAN),
+                             coefficients=task.coefficients, name="task")
+        reference = _reference(problem)
+    except Exception:
+        return tests
+    if reference is not None:
+        tests.append((problem, reference))
+    return tests
+
+
+def _reference(problem) -> np.ndarray | None:
+    from scipy.integrate import solve_ivp
+
+    scale = max(1.0, float(np.max(np.abs(problem.y0))))
+    with np.errstate(all="ignore"):
+        sol = solve_ivp(problem.f, (0.0, problem.t_final), problem.y0, method="Radau", jac=problem.jac,
+                        rtol=ODE_REFERENCE_RTOL, atol=ODE_REFERENCE_RTOL * scale * 1e-4)
+    if not sol.success or not np.all(np.isfinite(sol.y[:, -1])):
+        return None
+    return sol.y[:, -1]
+
+
+def _ode_study(spec: SolverSpec, problem, reference: np.ndarray | None, ns: list[int]):
+    from .verify import ConvergenceStudy, observed_order, relative_error
+
+    if reference is None:
+        return convergence_study(spec, problem, ns)
+    errors = [relative_error(spec.run(problem, n).u, reference) for n in ns]
+    study = ConvergenceStudy(method=spec.name, ns=list(ns), errors=errors)
+    study.orders = [observed_order(e0, e1, n1 / n0) for e0, e1, n0, n1 in zip(errors, errors[1:], ns, ns[1:])]
+    return study
+
+
+def run_ode_exam(spec: SolverSpec, equation: Equation | None, task: SkillTask | None) -> ValidationReport:
+    report = ValidationReport(ok=False, message="", solver=spec.name, kind=spec.kind, order=spec.order)
+    if spec.kind != "ode":
+        report.message = f"skill solves {spec.kind!r} but the task is an ODE (kind 'ode')"
+        return report
+    if equation is not None:
+        report.message = "an ODE skill must not define EQUATION or operator"
+        return report
+    if task is not None and any(m["name"] == spec.name for m in task.existing_methods):
+        report.message = f"a solver named {spec.name!r} already exists; pick a new name"
+        return report
+    ns = STUDY_GRIDS[0]
+    for problem, reference in ode_test_problems(task):
+        label = "; ".join(problem.exact) if reference is None else \
+            f"the task's own ODE on [0, {problem.t_final:g}], reference = tight Radau run"
+        case: dict = {"exact": label, "ns": ns}
+        report.cases.append(case)
+        try:
+            study = _ode_study(spec, problem, reference, ns)
+        except Exception as exc:
+            return _crashed(report, case, exc)
+        if not _graded(report, case, study, spec, overall=True):
+            return report
+    report.ok = True
+    report.message = f"passed {len(report.cases)} ODE tests with known solutions"
     return report
 
 
@@ -464,7 +600,7 @@ class SkillLibrary:
         spec = solver_from_module(module)
         if equation is not None and equation.kind not in equations:
             equations.add(equation)
-        if spec.kind not in equations:
+        if spec.kind != "ode" and spec.kind not in equations:
             raise ValueError(f"{path.name}: unknown equation kind {spec.kind!r}")
         registry.register(spec)
         return spec

@@ -9,6 +9,7 @@
   --ground: #f3f4f1; --surface: #ffffff; --soft: #f6f8f5; --soft-line: #e3e7e1; --track: #eef0ec;
   --line: #dde1dc; --field-line: #cdd3cd; --ink: #14212b; --muted: #5b6670;
   --accent: #0e6b6b; --accent-ink: #0b5656; --accent-soft: #e3f0ee; --on-accent: #ffffff;
+  --s2: #6b4fb8; --s3: #b7791f; --s4: #2f6fb0; --s5: #b5446e; --s6: #4d7c2a;
   --exact: #c4511f; --ok: #1a6a43; --ok-soft: #e2f2e9; --bad: #b42318; --bad-soft: #fbe9e7;
   --bar: #14212b; --bar-raised: #22323e; --bar-line: #3a4a56; --bar-ink: #f3f4f1; --bar-muted: #b9c4cc; --bar-accent: #7fc4bc;
   --hero: #14212b; --hero-ink: #f3f4f1; --hero-muted: #b9c4cc; --hero-accent: #7fc4bc;
@@ -22,6 +23,7 @@
     --ground: #10171d; --surface: #172129; --soft: #1c2831; --soft-line: #2a3742; --track: #24313b;
     --line: #2a3742; --field-line: #3a4955; --ink: #e8edf0; --muted: #9aa8b2;
     --accent: #4fb3a8; --accent-ink: #8fd6cd; --accent-soft: #173a3a; --on-accent: #0b1a1a;
+    --s2: #b39ddb; --s3: #e6b450; --s4: #7fb2e5; --s5: #e889ad; --s6: #9ccc65;
     --exact: #f0915e; --ok: #63c99a; --ok-soft: #173326; --bad: #f2867a; --bad-soft: #3a1d1a;
     --bar: #0b1116; --bar-raised: #1c2831; --bar-line: #2a3742;
     --hero: #0b1116; --hero-ink: #e8edf0;
@@ -186,6 +188,12 @@ svg.chart .grid { stroke: var(--soft-line); }
 svg.chart .u { stroke: var(--accent); }
 svg.chart .area { fill: var(--accent); fill-opacity: .08; }
 svg.chart .exact { stroke: var(--exact); }
+.stack { display: flex; flex-direction: column; gap: 16px; }
+textarea.short { min-height: 88px; font-family: var(--mono); font-size: 13px; }
+.family { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+.formula .ode-line { display: block; }
+.finals { width: auto; min-width: 50%; }
+.finals td, .finals th { font-family: var(--mono); }
 .plots { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 16px; }
 canvas { width: 100%; height: auto; image-rendering: pixelated; border-radius: 8px; display: block; }
 .scale { display: flex; align-items: center; gap: 8px; font: 11px var(--mono); color: var(--muted); }
@@ -360,11 +368,45 @@ th { color: var(--muted); font-weight: 500; font-size: 12px; }
 
       <div class="composer-body">
         <div id="pane-form" role="tabpanel" aria-labelledby="tab-form" style="display: flex; flex-direction: column; gap: 16px">
+          <div class="segmented family" role="group" aria-label="方程类别">
+            <button type="button" id="fam-pde" aria-selected="true" aria-pressed="true">偏微分方程</button>
+            <button type="button" id="fam-ode" aria-selected="false" aria-pressed="false">常微分方程（组）</button>
+          </div>
           <div class="field">
             <label for="preset">从课程里选一道题</label>
             <select id="preset"><option value="">（自己填写）</option></select>
           </div>
 
+          <div class="stack hidden" id="ode-fields">
+            <div class="field">
+              <label for="ode-rhs">方程组 y′ = f(t, y) <span>· 每行一个，未知量 y1, y2, …</span></label>
+              <textarea id="ode-rhs" class="short" spellcheck="false" placeholder="y1' = y2&#10;y2' = -y1">y1' = y2
+y2' = -y1</textarea>
+            </div>
+            <div class="pair">
+              <div class="field">
+                <label for="ode-initial">初值 y(0) <span>· 逗号分隔</span></label>
+                <input type="text" id="ode-initial" value="1, 0" spellcheck="false">
+              </div>
+              <div class="field">
+                <label for="ode-t">终止时间</label>
+                <input type="text" id="ode-t" value="10">
+              </div>
+            </div>
+            <div class="pair">
+              <div class="field">
+                <label for="ode-coefficients">系数 <span>· 如 mu = 1</span></label>
+                <input type="text" id="ode-coefficients" spellcheck="false">
+              </div>
+              <div class="field">
+                <label for="ode-exact">精确解 <span>· 可选，分量用 ; 分隔</span></label>
+                <input type="text" id="ode-exact" spellcheck="false">
+              </div>
+            </div>
+            <p class="hint">高阶方程先写成一阶方程组：x″ = −x 写成 <code>y1' = y2</code>、<code>y2' = -y1</code>。表达式用 t、y1、y2…、系数名和 sin、cos、exp、pi。</p>
+          </div>
+
+          <div class="stack" id="pde-fields">
           <div class="quad">
             <div class="field">
               <label for="kind">方程类型</label>
@@ -428,12 +470,13 @@ th { color: var(--muted); font-weight: 500; font-size: 12px; }
               <p class="hint">没填的从精确解推出来，源项默认 0。表达式用 x、y、t 和 sin、cos、exp、pi，例如 <code>sin(pi*x)*exp(-t)</code>。</p>
             </div>
           </details>
+          </div>
         </div>
 
         <div id="pane-text" role="tabpanel" aria-labelledby="tab-text" class="hidden" style="flex-direction: column; gap: 8px">
           <div class="field">
             <label for="text">用一句话描述题目</label>
-            <textarea id="text" placeholder="例如：一根长 1 的杆，两端温度保持 0，初始温度 sin(pi x)，热扩散系数 0.1，求 t = 0.5 时的温度分布。"></textarea>
+            <textarea id="text" placeholder="例如：一根长 1 的杆，两端温度保持 0，初始温度 sin(pi x)，热扩散系数 0.1，求 t = 0.5 时的温度分布。也可以是常微分方程，比如 x'' + x = 0，x(0) = 1，x'(0) = 0，求 x(10)。"></textarea>
           </div>
           <p class="hint" id="llm-hint"></p>
         </div>
@@ -549,6 +592,9 @@ const MORE = ["initial", "boundary_value", "initial_velocity"];
 const GREEK = { alpha: "α", beta: "β", gamma: "γ", delta: "δ", kappa: "κ", lambda: "λ", mu: "μ", nu: "ν", sigma: "σ", omega: "ω", pi: "π" };
 let info = null;
 let mode = "form";
+let family = "pde";
+const ODE_FIELDS = ["ode-rhs", "ode-initial", "ode-t", "ode-coefficients", "ode-exact"];
+const SERIES = ["var(--accent)", "var(--s2)", "var(--s3)", "var(--s4)", "var(--s5)", "var(--s6)", "var(--exact)", "var(--muted)"];
 let asked = false;
 
 function fmt(v, digits = 3) {
@@ -603,9 +649,9 @@ function readDomain() {
   });
 }
 
-function readCoefficients() {
+function readCoefficients(id = "coefficients") {
   const out = {};
-  for (const part of $("coefficients").value.split(/[,，]/).map((s) => s.trim()).filter(Boolean)) {
+  for (const part of $(id).value.split(/[,，]/).map((s) => s.trim()).filter(Boolean)) {
     const m = part.match(/^([A-Za-z][A-Za-z0-9]*)\s*=\s*(.+)$/);
     if (!m || !isFinite(Number(m[2]))) throw new Error(`系数写法不对：${part}（应为 名字 = 数值）`);
     out[m[1]] = Number(m[2]);
@@ -613,7 +659,41 @@ function readCoefficients() {
   return out;
 }
 
+function setFamily(next) {
+  family = next;
+  for (const name of ["pde", "ode"]) {
+    $("fam-" + name).setAttribute("aria-selected", String(name === family));
+    $("fam-" + name).setAttribute("aria-pressed", String(name === family));
+    $(name + "-fields").classList.toggle("hidden", name !== family);
+  }
+  updateEquation();
+}
+
+// "y1' = y2" / "dy1/dt = y2" / "y2" -> "y2": the right-hand sides, one per line
+function odeLines(text) {
+  return text.split(/[\n;；]/).map((s) => s.trim()).filter(Boolean).map((s) => s.includes("=") ? s.slice(s.indexOf("=") + 1).trim() : s);
+}
+
+function updateOde() {
+  const rhs = odeLines($("ode-rhs").value);
+  const lines = rhs.map((r, i) => el("span", { class: "ode-line" }, `y${i + 1}′ = `, ...formula(r)));
+  $("formula").replaceChildren(...(lines.length ? lines : ["（还没填方程组）"]));
+  $("eq-tag").textContent = `ode · ${rhs.length} 个方程 · 初值问题`;
+  const parts = [`t ∈ [0, ${$("ode-t").value.trim() || "?"}]`];
+  let coefs = {};
+  try { coefs = readCoefficients("ode-coefficients"); } catch { /* shown on solve */ }
+  const cs = Object.entries(coefs).map(([k, v]) => `${GREEK[k] || k} = ${v}`);
+  if (cs.length) parts.push(cs.join("，"));
+  $("where").textContent = parts.join("，");
+  const exact = $("ode-exact").value.trim();
+  const rows = [["初值 y(0)", `(${$("ode-initial").value.trim() || "没填"})`],
+    ["精确解", exact || "（没有，用 Richardson 估计误差，再和独立积分对照）"]];
+  $("conds").replaceChildren(...rows.flatMap(([k, v]) => [el("dt", {}, k), el("dd", {}, v)]));
+  schedulePreview();
+}
+
 function updateEquation() {
+  if (family === "ode") { updateOde(); return; }
   const eq = info.equations.find((e) => e.kind === $("kind").value);
   let dims = 1, domain = [];
   try { domain = readDomain(); dims = Math.max(domain.length, 1); } catch { /* shown on solve */ }
@@ -666,6 +746,12 @@ async function loadPreview() {
   }
   if (seq !== previewSeq) return;
   const curves = data.curves;
+  if (data.dim === 0) {
+    box.replaceChildren(curves.length
+      ? curvesChart(data.axes[0], curves.map((c, i) => ({ name: c.label, values: c.values, colour: SERIES[i % SERIES.length] })), "题目给的精确解", "t", box)
+      : el("p", { class: "message" }, "没有精确解可以预先画，求解后画出 y(t)。"));
+    return;
+  }
   if (!curves.length) {
     box.replaceChildren(el("p", { class: "message" }, data.dim > 2 ? "三维题目不画预览图。" : "没有可以预先画出来的函数。"));
   } else if (data.dim === 1) {
@@ -678,6 +764,16 @@ async function loadPreview() {
 }
 
 function fillForm(p) {
+  if (p.kind === "ode") {
+    $("ode-rhs").value = p.rhs.map((r, i) => `y${i + 1}' = ${r}`).join("\n");
+    $("ode-initial").value = p.initial.join(", ");
+    $("ode-t").value = p.t_final ?? "";
+    $("ode-coefficients").value = Object.entries(p.coefficients || {}).map(([k, v]) => `${k} = ${v}`).join(", ");
+    $("ode-exact").value = (p.exact || []).join("; ");
+    setFamily("ode");
+    return;
+  }
+  if (family !== "pde") { family = "pde"; setFamily("pde"); }
   if (![...$("kinds").options].some((o) => o.value === p.kind)) $("kinds").append(el("option", { value: p.kind }));
   $("kind").value = p.kind;
   $("boundary").value = p.boundary;
@@ -689,7 +785,23 @@ function fillForm(p) {
   updateEquation();
 }
 
+function readOde() {
+  const t = $("ode-t").value.trim();
+  if (!t || !isFinite(Number(t)) || Number(t) <= 0) throw new Error("终止时间必须是正数");
+  const rhs = odeLines($("ode-rhs").value);
+  if (!rhs.length) throw new Error("请填写方程组，每行一个，例如 y1' = y2");
+  return { kind: "ode", rhs, initial: $("ode-initial").value.trim(), t_final: Number(t),
+    coefficients: readCoefficients("ode-coefficients"), exact: $("ode-exact").value.trim(),
+    equation: rhs.map((r, i) => `y${i + 1}' = ${r}`).join("; ") };
+}
+
 function readForm() {
+  if (family === "ode") {
+    const problem = readOde();
+    const preset = info.examples.find((e) => e.name === $("preset").value);
+    if (preset && preset.problem.kind === "ode") { problem.name = preset.name; problem.description = preset.title; }
+    return problem;
+  }
   const domain = readDomain();
   if (!domain.length) throw new Error("请填写区域");
   const t = $("t_final").value.trim();
@@ -722,6 +834,7 @@ function setMode(next) {
 }
 
 const IDEAS = [
+  "单摆方程 θ'' + sin θ = 0，θ(0) = 1，θ'(0) = 0，求 t = 10 时的角度和角速度。",
   "一根长 1 的杆，两端温度保持 0，初始温度 sin(pi x)，热扩散系数 0.1，求 t = 0.5 时的温度分布。",
   "在单位正方形上解泊松方程 -Δu = 2π² sin(πx) sin(πy)，边界上 u = 0。",
   "周期区间 [0, 1] 上的波以速度 1 向右传播，初始形状 sin(2πx)，算到 t = 1。",
@@ -805,7 +918,8 @@ function showReport(r) {
   $("stats").replaceChildren(
     stat(r.error_kind === "exact" ? "误差（对比精确解）" : "误差（估计值）", fmt(r.error), margin, true),
     stat("方法", r.method || "-", spec ? spec.description : ""),
-    stat("网格", r.n ? `n = ${r.n}` : "-", `求解 ${r.solver_runs ?? 0} 次`),
+    stat(r.problem.kind === "ode" ? "步数" : "网格", r.n ? `n = ${r.n}` : "-",
+      `求解 ${r.solver_runs ?? 0} 次${r.problem.kind === "ode" && spec && spec.description.includes("rtol") ? "，自适应方法 n 定容差" : ""}`),
   );
   drawSolution(r.solution);
 
@@ -845,10 +959,74 @@ function showReport(r) {
   $("steps-card").classList.toggle("hidden", !steps.length);
 }
 
+function drawOde(s, plots) {
+  const tr = s.trajectory, ex = s.exact_curves;
+  const series = [];
+  const base = tr || ex;
+  if (base) {
+    s.names.slice(0, base.y.length).forEach((name, i) => {
+      const colour = SERIES[i % SERIES.length];
+      if (tr) series.push({ name, values: tr.y[i], colour });
+      if (ex) series.push({ name: tr ? `${name} 精确解` : name, values: ex.y[i], colour, dashed: !!tr });
+    });
+    const marks = s.u.slice(0, base.y.length).map((v, i) => ({ x: s.t, y: v, colour: SERIES[i % SERIES.length] }));
+    plots.append(curvesChart(base.t, series, `y(t)，t ∈ [0, ${fmt(s.t)}]（曲线用 scipy LSODA 画，● 是 agent 的答案）`, "t", plots, marks));
+  } else plots.append(el("p", { class: "message" }, "没能画出 y(t) 曲线，下面是终点的数值。"));
+  const head = ["分量", `数值解 y(${fmt(s.t)})`, ...(s.exact ? ["精确解", "误差"] : [])];
+  const rows = s.u.map((v, i) => el("tr", {}, el("td", {}, s.names[i]), el("td", {}, fmt(v, 8)),
+    ...(s.exact ? [el("td", {}, fmt(s.exact[i], 8)), el("td", {}, fmt(Math.abs(v - s.exact[i]), 2))] : [])));
+  plots.append(el("div", { class: "table-wrap" }, el("table", { class: "finals" },
+    el("thead", {}, el("tr", {}, ...head.map((h) => el("th", {}, h)))), el("tbody", {}, ...rows))));
+}
+
+function curvesChart(xs, series, caption, xname, box, marks = []) {
+  const W = Math.round(Math.min(900, Math.max(320, box.clientWidth || 720)));
+  const H = W < 560 ? 240 : 300, L = 56, R = 16, T = 16, B = 34;
+  const ys = series.flatMap((c) => c.values).concat(marks.map((m) => m.y)).filter((v) => v !== null && isFinite(v));
+  let lo = Math.min(...ys), hi = Math.max(...ys);
+  if (hi - lo < 1e-12) { lo -= 1; hi += 1; }
+  const pad = (hi - lo) * 0.08; lo -= pad; hi += pad;
+  const x0 = xs[0], x1 = xs[xs.length - 1];
+  const px = (x) => L + (x - x0) / (x1 - x0) * (W - L - R);
+  const py = (y) => T + (hi - y) / (hi - lo) * (H - T - B);
+  const ns = "http://www.w3.org/2000/svg";
+  const svg = document.createElementNS(ns, "svg");
+  svg.setAttribute("viewBox", `0 0 ${W} ${H}`);
+  svg.setAttribute("class", "chart");
+  svg.setAttribute("role", "img");
+  svg.setAttribute("aria-label", `${caption}：${series.map((c) => c.name).join("、")}`);
+  const add = (tag, attrs, text) => {
+    const n = document.createElementNS(ns, tag);
+    for (const [k, v] of Object.entries(attrs)) n.setAttribute(k, v);
+    if (text !== undefined) n.textContent = text;
+    svg.append(n); return n;
+  };
+  for (let i = 0; i <= 4; i++) {
+    const y = lo + (hi - lo) * i / 4;
+    add("line", { class: "grid", x1: L, x2: W - R, y1: py(y), y2: py(y) });
+    add("text", { x: L - 8, y: py(y) + 4, "text-anchor": "end" }, fmt(y));
+    const x = x0 + (x1 - x0) * i / 4;
+    add("text", { x: px(x), y: H - 10, "text-anchor": i === 4 ? "end" : "middle" }, i === 4 ? `${xname} = ${fmt(x)}` : fmt(x));
+  }
+  const path = (vals) => vals.map((v, i) => `${i ? "L" : "M"}${px(xs[i]).toFixed(1)},${py(v).toFixed(1)}`).join("");
+  for (const c of series) {
+    add("path", { d: path(c.values), fill: "none", style: `stroke: ${c.colour}`, "stroke-width": c.dashed ? 1.6 : 2.4,
+      "stroke-linecap": "round", "stroke-linejoin": "round", ...(c.dashed ? { "stroke-dasharray": "6 6" } : {}) });
+  }
+  for (const m of marks) {
+    if (m.y !== null && isFinite(m.y)) add("circle", { cx: px(m.x), cy: py(m.y), r: 4.5, style: `fill: ${m.colour}; stroke: var(--surface); stroke-width: 1.5` });
+  }
+  const legend = el("div", { class: "legend", style: "flex-wrap: wrap" },
+    ...series.filter((c) => !c.dashed).map((c) => el("span", {}, el("i", { class: "swatch", style: `background: ${c.colour}` }), c.name)),
+    ...(series.some((c) => c.dashed) ? [el("span", {}, el("i", { class: "swatch dash" }), "精确解")] : []));
+  return el("figure", {}, el("div", { class: "fig-head" }, el("figcaption", {}, caption), legend), svg);
+}
+
 function drawSolution(s) {
   const plots = $("plots");
   plots.replaceChildren();
   if (!s) return;
+  if (s.dim === 0) { drawOde(s, plots); return; }
   const when = s.t !== null && s.t !== undefined ? `t = ${fmt(s.t)} 时的` : "";
   if (s.dim === 1) {
     const series = [{ name: "数值解", values: s.u }, ...(s.exact ? [{ name: "精确解", values: s.exact }] : [])];
@@ -1158,7 +1336,7 @@ function showChat(pending) {
       ideas.append(b);
     }
     log.replaceChildren(el("div", { class: "chat-empty" },
-      el("span", {}, "微积分、线性代数、常微分方程、概率、证明……都可以问。偏微分方程要数值求解的话，用上面的“求解”。"), ideas));
+      el("span", {}, "微积分、线性代数、常微分方程、概率、证明……都可以问。偏微分方程或常微分方程要数值求解的话，用上面的“求解”。"), ideas));
     return;
   }
   log.replaceChildren(...chat.map((m) => m.role === "user"
@@ -1291,12 +1469,17 @@ async function init() {
   setupCloud();
   try { await loadInfo(); } catch (e) { $("llm-text").textContent = e.message; return; }
   for (const eq of info.equations) $("kinds").append(el("option", { value: eq.kind }));
-  for (const ex of info.examples) $("preset").append(el("option", { value: ex.name }, `第 ${ex.level} 级 · ${ex.title}`));
+  for (const ex of info.examples) {
+    const label = ex.problem.kind === "ode" ? `常微分 第 ${ex.level} 阶段 · ${ex.title}` : `第 ${ex.level} 级 · ${ex.title}`;
+    $("preset").append(el("option", { value: ex.name }, label));
+  }
   $("preset").addEventListener("change", () => {
     const ex = info.examples.find((e) => e.name === $("preset").value);
     if (ex) { fillForm(ex.problem); setTol(ex.tol); }
   });
-  for (const id of ["kind", "boundary", "domain", "t_final", "coefficients", ...FIELDS]) $(id).addEventListener("input", updateEquation);
+  for (const id of ["kind", "boundary", "domain", "t_final", "coefficients", ...FIELDS, ...ODE_FIELDS]) $(id).addEventListener("input", updateEquation);
+  $("fam-pde").addEventListener("click", () => { $("preset").value = ""; setFamily("pde"); });
+  $("fam-ode").addEventListener("click", () => { $("preset").value = ""; setFamily("ode"); });
   document.querySelectorAll(".tol button").forEach((b) => b.addEventListener("click", () => setTol(b.dataset.tol)));
   $("tol").addEventListener("input", () => setTol($("tol").value, false));
   for (const idea of IDEAS) {

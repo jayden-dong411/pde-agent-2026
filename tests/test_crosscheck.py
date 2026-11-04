@@ -150,12 +150,20 @@ def test_viscous_burgers_without_source_may_only_lose_energy():
     assert conservation_laws(eq, problem, sym) == ["mass", "energy_decay"]
 
 
-def test_odes_and_unknown_equations_are_skipped():
+def test_odes_are_checked_against_an_independent_integrator():
+    import dataclasses
+
     from pde_agent.curriculum import ode_curriculum
-    lesson = ode_curriculum()[0]
-    spec = builtin_registry().for_problem(lesson.problem)[0]
-    cc = cross_check(None, spec, lesson.problem, spec.run(lesson.problem, 32), 1e-3)
-    assert cc.passed and not cc.checks and cc.skipped
+    lessons = {lesson.name: lesson for lesson in ode_curriculum()}
+    registry = builtin_registry()
+    for name, method in (("ode-harmonic", "ode.rk4"), ("ode-stiff-1e3", "ode.bdf2")):
+        problem = lessons[name].problem.for_solver()  # no exact solution: the check is all there is
+        spec = registry.get(method)
+        result = spec.run(problem, 2048)
+        cc = cross_check(None, spec, problem, result, 1e-3)
+        assert cc.passed and [c.name for c in cc.checks] == ["reference"] and cc.work > 0, (name, cc.describe())
+        wrong = dataclasses.replace(result, u=result.u * 1.05)
+        assert not cross_check(None, spec, problem, wrong, 1e-3).passed
 
 
 def _lesson_equation(name):

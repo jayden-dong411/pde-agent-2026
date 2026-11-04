@@ -27,7 +27,8 @@ from typing import Any
 
 from .equations import EquationBook
 from .problem import PDEProblem
-from .skills import TEMPLATE, SkillCandidate, SkillTask, ValidationReport
+from .ode import ODEProblem
+from .skills import ODE_TEMPLATE, TEMPLATE, SkillCandidate, SkillTask, ValidationReport
 
 DEFAULT_MODEL = "claude-opus-5-5"
 # Server-side fallback: if the model declines a request, the API retries it
@@ -82,6 +83,17 @@ PROBLEM_SCHEMA: dict[str, Any] = {
         "initial_velocity": {"type": "string"},
         "exact": {"type": "string"},
         "notes": {"type": "string"},
+        # ordinary differential equations (kind "ode"): optional, so replies written for PDEs stay valid
+        "ode": {
+            "type": "object",
+            "properties": {
+                "rhs": {"type": "array", "items": {"type": "string"}},
+                "initial": {"type": "array", "items": {"type": "string"}},
+                "exact": {"type": "array", "items": {"type": "string"}},
+            },
+            "required": ["rhs", "initial", "exact"],
+            "additionalProperties": False,
+        },
     },
     "required": [
         "kind", "equation", "domain", "t_final", "coefficients", "source", "boundary",
@@ -106,12 +118,13 @@ PROBLEM_EXAMPLE: dict[str, Any] = {
     "kind": "heat", "equation": "u_t = alpha*u_xx", "domain": [{"lower": 0, "upper": 1}], "t_final": 0.5,
     "coefficients": [{"name": "alpha", "value": 0.1}], "source": "0", "boundary": "dirichlet",
     "boundary_value": "", "initial": "sin(pi*x)", "initial_velocity": "", "exact": "", "notes": "两端温度为零",
+    "ode": {"rhs": [], "initial": [], "exact": []},
 }
 SKILL_EXAMPLE: dict[str, Any] = {
     "code": "<the complete module source>", "test_solutions": ["sin(pi*x)*exp(-t)"], "summary": "<方法简介>",
 }
 
-PARSE_SYSTEM = """You translate a PDE problem described in natural language (often Chinese) into the structured problem format of pde-agent.
+PARSE_SYSTEM = """You translate a PDE or ODE problem described in natural language (often Chinese) into the structured problem format of pde-agent.
 
 Known equation kinds (the PDE is written as L(u) = f):
 {kinds}
@@ -124,7 +137,10 @@ Rules:
 - boundary: "dirichlet" (values prescribed on the boundary: g(x, y, t) goes in boundary_value; "" means zero, or the exact solution when one is given) or "periodic".
 - source: the right-hand side f of L(u) = f, "0" if there is none. Move every term that does not involve u to the source.
 - exact: only when the user states the exact solution.
-- notes: the assumptions you made, in Chinese."""
+- notes: the assumptions you made, in Chinese.
+- ode: for PDE problems {{"rhs": [], "initial": [], "exact": []}}.
+
+Ordinary differential equations (an initial value problem in t only, no x or y): kind "ode". Write the system as y' = f(t, y) with unknowns y1, y2, ... (rewrite a higher-order equation as a first-order system, e.g. x'' = -x becomes y1' = y2, y2' = -y1). ode.rhs: the expressions f1, f2, ... in t, y1, y2, ... and the coefficient names; ode.initial: the values at t = 0 (shift time so that it starts at 0); ode.exact: the exact solution components as functions of t, only when the user states it, else []. t_final: the end time. equation: the system as the user would read it, e.g. "y1' = y2; y2' = -y1". domain: []. source "0", boundary "dirichlet", and "" for boundary_value, initial, initial_velocity and exact."""
 
 SKILL_SYSTEM = """You write numerical PDE solver modules ("skills") for pde-agent, a PDE-solving agent that grows its own library of methods.
 
@@ -155,14 +171,54 @@ A complete example skill:
 Reply with the full module source in `code`, up to two extra exact solutions for the exam in `test_solutions` (expressions in x, y, t that respect the boundary type, e.g. periodic in x for periodic problems), and a one-paragraph `summary` of the method in Chinese."""
 
 
+ODE_SKILL_SYSTEM = """You write numerical ODE integrators ("skills") for pde-agent, an equation-solving agent that grows its own library of methods. The problems are initial value problems y' = f(t, y), y(0) = y0, for a system of m equations, solved on [0, t_final].
+
+Each module is checked statically and then examined: the method runs with n = 32, 64 and 128 on two standard problems with exact solutions (logistic growth y' = y(1 - y), and the oscillator y1' = y2, y2' = -y1, both on [0, 2]) and on the task's own system on [0, min(t_final, 2)] against a tight reference run. The skill is admitted only if the relative max-norm error at n = 128 is at most 5e-2 on every test and the observed convergence order from n = 32 to 128 reaches max(0.8, 0.7 * the order you claim). So the method has to be stable at these step counts for the task's stiffness: use an implicit (A- or L-stable) method for a stiff task. Claim the order you can actually deliver.
+
+Module contract:
+- Imports: only numpy, scipy, sympy, math and pde_agent.skill_api. No file, network or process access; no eval, exec or getattr; no attributes starting with an underscore. Do not call scipy.integrate.solve_ivp or odeint: write the method itself.
+- SOLVER = {{"name": "ode.<method>", "kind": "ode", "dims": [0], "boundaries": ["ivp"], "order": <convergence order in n>, "description": ...}}
+- def solve(problem, n, options) -> SolveResult, where n is the number of equal time steps (h = t_final / n).
+- Do not define EQUATION or operator.
+
+The problem object (read only):
+- problem.size (m), problem.t_final, problem.y0 (numpy array of length m; copy it before changing it), problem.coefficients.
+- problem.f(t, y) -> numpy array of length m; problem.jac(t, y) -> m x m numpy array df/dy.
+- The exact solution is never passed to solve().
+
+Work counting and result:
+- counts = new_counts() is a dict with keys "f", "jac", "lu", "solve": add 1 for every call of problem.f, problem.jac, every LU factorisation and every linear solve. work = ode_work(problem, counts).
+- Return SolveResult(u=y_final, grid=(), n=n, t=problem.t_final, steps=n, dt=h, work=work) with y_final the state at t_final, a numpy array of length m.
+- implicit_step(problem, t_new, guess, ch, b, counts) solves y - ch * f(t_new, y) = b by Newton's method (counting its own work) and raises NewtonFailed if it does not converge; catch it and raise SolverDiverged.
+
+Helpers in pde_agent.skill_api: SolveResult, SolverDiverged, NewtonFailed, new_counts, ode_work, implicit_step, check_growth(y, limit, name, step), growth_limit(*arrays).
+
+A complete example skill:
+```python
+{template}
+```
+
+Reply with the full module source in `code`, an empty list in `test_solutions`, and a one-paragraph `summary` of the method in Chinese."""
+
+
 def _blank(value: str) -> str | None:
     value = (value or "").strip()
     return value or None
 
 
-def problem_from_reply(data: dict[str, Any]) -> PDEProblem:
+def problem_from_reply(data: dict[str, Any]) -> PDEProblem | ODEProblem:
     """Build a problem from the parse schema (raises ValueError if invalid)."""
     t_final = float(data.get("t_final") or 0.0)
+    if data["kind"].strip() == "ode":
+        ode = data.get("ode") or {}
+        if not ode.get("rhs"):
+            raise ValueError("an ODE needs ode.rhs, one expression per unknown y1, y2, ...")
+        return ODEProblem(
+            rhs=list(ode["rhs"]), initial=list(ode.get("initial") or []), t_final=t_final,
+            coefficients={c["name"]: c["value"] for c in data.get("coefficients", [])},
+            exact=list(ode["exact"]) if ode.get("exact") else None,
+            equation=data.get("equation", "").strip(), description=data.get("notes", "").strip(),
+        )
     return PDEProblem(
         kind=data["kind"].strip(),
         domain=[(d["lower"], d["upper"]) for d in data["domain"]],
@@ -537,7 +593,10 @@ class SkillSession:
     def __init__(self, brain: Brain, task: SkillTask):
         self.brain = brain
         self.task = task
-        self.system = SKILL_SYSTEM.format(template=TEMPLATE.read_text(encoding="utf-8").strip())
+        if task.kind == "ode":
+            self.system = ODE_SKILL_SYSTEM.format(template=ODE_TEMPLATE.read_text(encoding="utf-8").strip())
+        else:
+            self.system = SKILL_SYSTEM.format(template=TEMPLATE.read_text(encoding="utf-8").strip())
         self.messages: list[dict] = [{"role": "user", "content": task_prompt(task)}]
 
     def propose(self) -> SkillCandidate:
@@ -559,6 +618,8 @@ class SkillSession:
 
 
 def task_prompt(task: SkillTask) -> str:
+    if task.kind == "ode":
+        return ode_task_prompt(task)
     if task.new_equation:
         kind_line = f"- kind: {task.kind} (a NEW equation: also define EQUATION and operator)"
     else:
@@ -580,4 +641,25 @@ def task_prompt(task: SkillTask) -> str:
         "- existing methods for this kind:",
         methods,
         "Choose a solver name (kind.method) that is not used yet.",
+    ])
+
+
+def ode_task_prompt(task: SkillTask) -> str:
+    methods = "\n".join(
+        f"  - {m['name']} (order {m['order']}): {m['description']}" for m in task.existing_methods) or "  - none"
+    if task.stiffness is None:
+        stiff = "unknown"
+    else:
+        stiff = f"{task.stiffness:.3g} (t_final times the fastest decay rate; above about 50 the system is stiff)"
+    return "\n".join([
+        "Write an ODE integrator skill for this kind of system.",
+        f"- system ({len(task.rhs or [])} equations): {task.equation}",
+        f"- initial values: {task.initial}",
+        f"- final time: {task.t_final}",
+        f"- coefficients: {task.coefficients or 'none'}",
+        f"- stiffness: {stiff}",
+        f"- why a new method is needed: {task.reason or 'no method covers this problem yet'}",
+        "- existing ODE methods:",
+        methods,
+        "Choose a solver name ode.<method> that is not used yet.",
     ])

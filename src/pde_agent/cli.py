@@ -1,4 +1,4 @@
-"""Command line: ``pde-agent curriculum | solve | ask | learn | bench | stats | skills | app``."""
+"""Command line: ``pde-agent curriculum | solve | ask | learn | bench | eval | stats | skills | app``."""
 
 from __future__ import annotations
 
@@ -158,6 +158,81 @@ def cmd_bench(args) -> int:
     return 0
 
 
+def _rate(part: int, whole: int) -> str:
+    return f"{part}/{whole}（{100 * part / whole:.0f}%）" if whole else "0/0"
+
+
+def cmd_eval(args) -> int:
+    from .evaluation import eval_cases, run_eval, run_parse_eval, summarize
+
+    report: dict = {}
+    if not args.parse_only:
+        parts = tuple(args.only) if args.only else ("pde", "ode")
+        cases = eval_cases(parts)
+        n_train = sum(c.split == "train" for c in cases)
+        print(f"评测：训练集 {n_train} 道（带精确解练习，只给“有经验”的 agent），"
+              f"测试集 {len(cases) - n_train} 道（藏起精确解，agent 自己估计误差，再用精确解打分）")
+        print(f"{'组':<6} {'题目':<26} {'自报':<4} {'真实':<4} {'方法':<26} {'自估误差':>9} {'真实误差':>9} {'求解次数':>6}")
+        arms = {"train": "训练", "memory_off": "无经验", "memory_on": "有经验"}
+
+        def show(r):
+            said = "成功" if r.reported else "失败"
+            truth = "达标" if r.correct else "超差"
+            flag = "  ← 假成功" if r.false_success else ""
+            print(f"{arms[r.arm]:<6} {r.case.name:<26} {said:<4} {truth:<4} {r.method or '-':<26} "
+                  f"{_fmt(r.claimed_error):>9} {_fmt(r.true_error):>9} {r.solver_runs:>8}{flag}")
+
+        results = run_eval(cases, time_budget=args.budget, progress=show)
+        print()
+        print(f"{'':<8} {'自报成功':>10} {'真正达标':>10} {'假成功率':>14} {'求解次数':>8} {'工作量':>10} {'耗时(秒)':>9}")
+        summaries = {}
+        for arm in ("memory_off", "memory_on"):
+            s = summarize(results, arm)
+            summaries[arm] = s
+            rate = _rate(s.false_success, s.reported)
+            print(f"{arms[arm]:<8} {s.reported:>10}/{s.cases:<3} {s.correct:>7}/{s.cases:<3} {rate:>14} "
+                  f"{s.solver_runs:>8} {s.work:>10.3g} {s.runtime:>9.2f}")
+        off, on = summaries["memory_off"], summaries["memory_on"]
+        if off.solver_runs and off.work:
+            print(f"有经验时求解次数是无经验的 {on.solver_runs / off.solver_runs:.2f} 倍，"
+                  f"工作量是 {on.work / off.work:.2f} 倍")
+        false = [r for r in results if r.false_success]
+        if false:
+            print("假成功（自称达到精度，实际没有）：" + "，".join(f"{r.case.name}（{arms[r.arm]}）" for r in false))
+        else:
+            print("没有假成功：每个自称成功的答案都真的达到了精度")
+        report["solve"] = {"results": [r.to_dict() for r in results],
+                           "summary": {k: v.to_dict() for k, v in summaries.items()}}
+
+    want_parse = args.parse or args.parse_only
+    if want_parse:
+        from .llm import make_brain
+
+        home = Path(args.home) if args.home else default_home()
+        saved_key = Settings(home).key(args.llm)
+        brain = make_brain(args.llm, args.model, log_path=home / "deepseek_requests.jsonl", api_key=saved_key or None)
+        name, _ = PROVIDERS[args.llm]
+        print(f"\n自然语言解析评测（{name}）：")
+
+        def show_parse(r):
+            print(f"  {'对' if r.ok else '错'}  {r.name:<22} {r.seconds:5.1f} 秒  {r.text}")
+            for m in r.mismatches:
+                print(f"      └ {m}")
+            if r.error:
+                print(f"      └ 出错：{r.error}")
+
+        parsed = run_parse_eval(brain, progress=show_parse)
+        print(f"解析正确 {_rate(sum(r.ok for r in parsed), len(parsed))}")
+        report["parse"] = [r.to_dict() for r in parsed]
+    elif not args.parse_only:
+        print("\n（加 --parse 用大模型跑中文自然语言解析评测）")
+
+    if args.json:
+        Path(args.json).write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
+        print(f"详细结果已写入 {args.json}")
+    return 0
+
+
 def cmd_stats(args) -> int:
     agent = _agent(args)
     rows = agent.memory.summary()
@@ -309,6 +384,14 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--ode", action="store_true", help="改用常微分方程第 0、1 阶段的基准题")
     p.add_argument("--json", help="把详细结果写到这个 JSON 文件")
     p.set_defaults(func=cmd_bench)
+
+    p = sub.add_parser("eval", help="评测：假成功率、训练/测试划分、有经验和无经验对比、中文解析")
+    p.add_argument("--only", action="append", choices=["pde", "ode"], help="只评测偏微分或常微分方程（可重复）")
+    p.add_argument("--budget", type=float, default=60.0, help="每道题最多用多少秒（默认 60）")
+    p.add_argument("--parse", action="store_true", help="同时用大模型跑中文自然语言解析评测（需要 API key）")
+    p.add_argument("--parse-only", action="store_true", help="只跑中文自然语言解析评测")
+    p.add_argument("--json", help="把详细结果写到这个 JSON 文件")
+    p.set_defaults(func=cmd_eval)
 
     sub.add_parser("stats", help="查看经验记忆").set_defaults(func=cmd_stats)
     sub.add_parser("skills", help="查看已知方程和方法").set_defaults(func=cmd_skills)

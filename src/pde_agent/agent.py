@@ -34,7 +34,7 @@ from pathlib import Path
 
 from .crosscheck import CrossCheck, cross_check
 from .equations import builtin_equations, operator_from_text
-from .features import Prediction, ProblemFeatures, extract, predict
+from .features import Prediction, ProblemFeatures, calibrate, extract, predict
 from .llm import LLMError
 from .memory import ExperienceStore
 from .problem import PDEProblem
@@ -126,7 +126,8 @@ class SolveReport:
         ranked = sorted((p for p in self.predictions.values() if p.work is not None), key=lambda p: p.work)
         if ranked:
             best = ranked[0]
-            text += f"。按特征估计 {best.method} 最省（n ≈ {best.n}，工作量约 {best.work:.2g}）"
+            how = "按特征和相近题的实测估计" if best.measured else "按特征估计"
+            text += f"。{how} {best.method} 最省（n ≈ {best.n}，工作量约 {best.work:.2g}）"
             notes = [f"{p.method}：{'；'.join(p.notes)}" for p in self.predictions.values() if p.notes]
             if notes:
                 text += "。" + "；".join(notes)
@@ -284,6 +285,11 @@ class PDEAgent:
             for spec in candidates:
                 report.predictions[spec.name] = predict(
                     spec, report.problem, report.features, report.tol, MAX_N[report.problem.dim])
+            # the cost model is a guess: correct it by what the same methods measured on similar problems
+            measured = self.memory.calibration(report.problem.signature(), report.features.to_dict(), report.tol)
+            for name, cal in measured.items():
+                if name in report.predictions:
+                    calibrate(report.predictions[name], cal.ratio, cal.neighbours)
         tags = report.features.tags if report.features else None
         predicted = {name: p.work for name, p in report.predictions.items()}
         for spec in self.memory.rank(report.problem.signature(), candidates, self.explore, predicted, tags):
@@ -299,6 +305,7 @@ class PDEAgent:
             report.trials.append({
                 "method": spec.name, "outcome": outcome, "n": n, "error": error,
                 "error_kind": report.error_kind, "work": work,
+                "predicted": prediction.model_work if prediction is not None else None,
             })
             if outcome == "success":
                 return

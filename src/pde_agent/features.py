@@ -90,6 +90,8 @@ class Prediction:
     work: float | None  # None: the method has no cost model
     order: float
     notes: list[str] = field(default_factory=list)
+    model_work: float | None = None  # the cost model's own figure, before the history's correction
+    measured: int = 0  # similar past problems the correction comes from (0: none)
 
 
 def _finest_wavenumber(problem: PDEProblem) -> float:
@@ -185,4 +187,14 @@ def predict(spec: SolverSpec, problem: PDEProblem, feats: ProblemFeatures, tol: 
             start = n  # below it the fast modes ring; that is not an estimate
             notes.append(f"刚性：最快的模态要 n ≥ {n} 步才衰减干净" if feats.ode else f"刚性：初值里的高频要 n ≥ {n} 才衰减干净")
     work = spec.cost(problem, n) if spec.cost else None
-    return Prediction(spec.name, n, start, work, order, notes)
+    return Prediction(spec.name, n, start, work, order, notes, model_work=work)
+
+
+def calibrate(prediction: Prediction, ratio: float, neighbours: int) -> None:
+    """Scale the predicted work by what similar past problems measured (``ExperienceStore.calibration``)."""
+    if prediction.model_work is None or not math.isfinite(prediction.model_work) or neighbours <= 0:
+        return
+    prediction.work = prediction.model_work * ratio
+    prediction.measured = neighbours
+    if ratio > 1.25 or ratio < 0.8:
+        prediction.notes.append(f"按 {neighbours} 道相近题的实测，工作量约为模型估计的 {ratio:.2g} 倍")

@@ -12,6 +12,12 @@ Each episode also records the problem's feature tags (``stiff``, ``rough``,
 tags, only those count, so a stiff problem does not inherit what worked on
 gentle ones.
 
+Each tried method also records the work its cost model predicted. The
+measured work over the predicted work, averaged over the nearest past
+problems in feature space (``calibration``), corrects the cost model where
+it is off: two implicit methods the model rates alike can differ by a
+factor of four in practice, and the history shows which.
+
 Episodes shared by other people through an experience hub (see ``hub.py``)
 are kept in a second file and count the same as local ones.
 """
@@ -63,8 +69,58 @@ _MEMBER = re.compile(r"[^\s/\\]{1,40}")
 SHARED_WEIGHT = 0.5  # other people's episodes inform the choice, ours decide it
 MAX_PER_MEMBER = 20  # per problem class, only a member's latest episodes count: nobody can outvote the rest
 MAX_TRIALS = 50
+RELIABLE = 0.5  # success rate (posterior mean) below which a method counts as unreliable
 EXPLORE_RATIO = 8.0  # an untried method is explored first only if predicted to cost at most this many times the cheapest
 MAX_PROBLEM_CHARS = 4000
+# calibration: the nearest CALIB_K past problems within CALIB_RADIUS (in log feature units) count, each
+# weighted 1 / (1 + distance / 2); CALIB_PRIOR is the weight of "the cost model is right" (ratio 1).
+# A method's error in the model is much the same across a class (BDF's step control costs about twice
+# the model's figure on every stiff linear problem), so even a problem 100x stiffer says something.
+CALIB_K = 5
+CALIB_RADIUS = 6.0
+CALIB_PRIOR = 0.3
+CALIB_OTHER_CLASS = 2.0  # extra distance of a problem from another class of the same kind and dimension
+_LOG_FEATURES = ("stiffness", "travel", "scale", "rate")
+
+
+@dataclass
+class Calibration:
+    method: str
+    ratio: float  # measured work / predicted work on similar problems, shrunk toward 1
+    neighbours: int  # how many similar problems it comes from
+    distance: float  # of the nearest one (0: the same problem)
+
+
+def feature_distance(a: dict, b: dict, tol_a: float, tol_b: float) -> float:
+    """How far apart two problems of one class are: log differences of their features."""
+    # the largest log difference, not their sum: stiffness and rate move together for an ODE
+    d = max(abs(math.log1p(abs(float(a.get(key) or 0.0))) - math.log1p(abs(float(b.get(key) or 0.0))))
+            for key in _LOG_FEATURES)
+    fa, fb = a.get("floor"), b.get("floor")
+    if fa and fb:
+        d += abs(math.log2(fa / fb))
+    if bool(a.get("smooth", True)) != bool(b.get("smooth", True)):
+        d += 1.0
+    if sorted(a.get("tags") or []) != sorted(b.get("tags") or []):
+        d += 1.0
+    if tol_a > 0 and tol_b > 0:
+        d += 0.5 * abs(math.log10(tol_a / tol_b))
+    return d
+
+
+def _clean_features(value) -> dict | None:
+    if not isinstance(value, dict):
+        return None
+    out = {}
+    for key in _LOG_FEATURES:
+        if key in value:
+            out[key] = _number(value[key], 0.0, 1e300)
+    if "floor" in value:
+        out["floor"] = _count(value["floor"], 10**7)
+    out["smooth"] = bool(value.get("smooth", True))
+    tags = value.get("tags", [])
+    out["tags"] = sorted({t for t in tags if isinstance(t, str) and _TAG.fullmatch(t)})[:8] if isinstance(tags, list) else []
+    return out
 
 
 def episode_id(episode: dict) -> str:
@@ -126,6 +182,7 @@ def clean_episode(episode) -> dict:
             "error": _number(trial.get("error"), 0.0), "error_kind": trial.get("error_kind", error_kind)
             if trial.get("error_kind", error_kind) in ("exact", "estimated") else error_kind,
             "work": _number(trial.get("work"), 0.0),
+            "predicted": _number(trial.get("predicted"), 0.0),
         })
         if trial["outcome"] == "success" and clean_trials[-1]["n"] is None:
             raise ValueError("a success needs its grid size")
@@ -159,6 +216,7 @@ def clean_episode(episode) -> dict:
         "runtime": _number(episode.get("runtime"), 0.0),
         "methods": clean_trials,
         "tags": sorted(set(tags)),
+        "features": _clean_features(episode.get("features")),
     }
 
 
@@ -214,13 +272,7 @@ class ExperienceStore:
     def stats(self, signature: str, tags: Iterable[str] | None = None) -> dict[str, MethodStats]:
         """Per-method record for a problem class; with ``tags``, only episodes with
         the same feature tags, when there are any (otherwise the whole class)."""
-        local = [(ep, 1.0) for ep in self.episodes if ep.get("signature") == signature]
-        per_member: dict[str, list[dict]] = {}
-        for ep in self.shared:
-            if ep.get("signature") == signature:
-                per_member.setdefault(ep.get("member") or "", []).append(ep)
-        shared = [(ep, SHARED_WEIGHT) for eps in per_member.values() for ep in eps[-MAX_PER_MEMBER:]]
-        episodes = local + shared
+        episodes = self._class_episodes(signature)
         if tags is not None:
             wanted = sorted(set(tags))
             same = [item for item in episodes if sorted(set(item[0].get("tags") or [])) == wanted]
@@ -241,9 +293,60 @@ class ExperienceStore:
                         st.local_grids.append(grid)
         return table
 
+    def _class_episodes(self, signature: str) -> list[tuple[dict, float]]:
+        local = [(ep, 1.0) for ep in self.episodes if ep.get("signature") == signature]
+        per_member: dict[str, list[dict]] = {}
+        for ep in self.shared:
+            if ep.get("signature") == signature:
+                per_member.setdefault(ep.get("member") or "", []).append(ep)
+        return local + [(ep, SHARED_WEIGHT) for eps in per_member.values() for ep in eps[-MAX_PER_MEMBER:]]
+
+    def calibration(self, signature: str, features: dict, tol: float) -> dict[str, Calibration]:
+        """Per method, measured work / cost-model work on the nearest past problems of the class.
+
+        Problems of another class of the same kind and dimension (another
+        boundary, another system size) count too, CALIB_OTHER_CLASS further
+        away. Only successful trials that recorded their prediction count. Each
+        method uses its own CALIB_K nearest problems within CALIB_RADIUS;
+        the log ratios are averaged with weights ``share / (1 + distance / 2)``
+        and a prior of weight CALIB_PRIOR at ratio 1, so one run moves the
+        model only part of the way.
+        """
+        found: dict[str, list[tuple[float, float, float]]] = {}
+        family = signature.rsplit("/", 1)[0] + "/"  # kind/dim: the same methods, another boundary or system size
+        others = sorted({ep.get("signature") for ep in self.episodes + self.shared
+                         if isinstance(ep.get("signature"), str) and ep["signature"].startswith(family)} - {signature})
+        pool = [(ep, w, 0.0) for ep, w in self._class_episodes(signature)]
+        for other in others:
+            pool += [(ep, w, CALIB_OTHER_CLASS) for ep, w in self._class_episodes(other)]
+        for ep, weight, extra in pool:
+            past = ep.get("features")
+            if not isinstance(past, dict):
+                continue
+            try:
+                d = extra + feature_distance(features, past, tol, float(ep.get("tol") or tol))
+            except (TypeError, ValueError, ZeroDivisionError):
+                continue
+            if d > CALIB_RADIUS:
+                continue
+            for trial in ep.get("methods", []):
+                predicted, work = trial.get("predicted"), trial.get("work")
+                if trial.get("outcome") != "success" or not predicted or not work:
+                    continue
+                if not (math.isfinite(predicted) and math.isfinite(work) and predicted > 0 and work > 0):
+                    continue
+                found.setdefault(trial["method"], []).append((d, weight, math.log(work / predicted)))
+        table = {}
+        for method, rows in found.items():
+            rows = sorted(rows, key=lambda r: r[0])[:CALIB_K]
+            weights = [w / (1.0 + d / 2) for d, w, _ in rows]
+            log_ratio = sum(w * lr for w, (_, _, lr) in zip(weights, rows)) / (sum(weights) + CALIB_PRIOR)
+            table[method] = Calibration(method, math.exp(log_ratio), len(rows), rows[0][0])
+        return table
+
     def rank(self, signature: str, candidates: Iterable[SolverSpec], explore: bool = True,
              predicted: dict[str, float] | None = None, tags: Iterable[str] | None = None) -> list[SolverSpec]:
-        """Order methods by learned reliability, then by work to succeed.
+        """Order methods: reliable ones first, then by expected work to succeed.
 
         ``predicted`` is the work each method is expected to need on this very
         problem (from its features); it breaks ties instead of the class-wide
@@ -267,8 +370,11 @@ class ExperienceStore:
             if st is None:
                 # untried: optimistic when exploring and plausible, otherwise after known-good methods
                 return (0 if explore and plausible(spec) else 1, 0.0, work, -spec.order, index)
-            band = round(st.success_rate, 1)
-            return (1 if explore else 0, -band, work if spec.name in predicted else st.mean_work, 0.0, index)
+            # a method that fails more often than not goes after the reliable ones; among reliable ones the
+            # expected work to succeed decides (a failure costs a retry with the next method)
+            unreliable = 1 if st.success_rate < RELIABLE else 0
+            expected = (work if spec.name in predicted else st.mean_work) / st.success_rate
+            return (1 if explore else 0, unreliable, expected, 0.0, index)
 
         return [spec for _, spec in sorted(enumerate(candidates), key=key)]
 

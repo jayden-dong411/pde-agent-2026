@@ -1271,7 +1271,8 @@ function setupSettings() {
 
 /* math Q&A */
 const CHAT_KEY = "pde-agent-chat";
-const CHAT_IDEAS = ["怎么证明 √2 是无理数？", "求 ∫₀^∞ e^(−x²) dx", "矩阵的特征值和奇异值有什么区别？", "解 y'' + y = 0，y(0) = 1，y'(0) = 0"];
+const CHAT_IDEAS = ["怎么证明 √2 是无理数？", "求 ∫₀^∞ e^(−x²) dx", "矩阵的特征值和奇异值有什么区别？",
+  "数值求解 u_t = 0.1 u_xx，x∈[0,1]，u(x,0) = sin(πx)，两端为 0，算到 t = 0.5", "把精度提高到 1e-5 再解一次"];
 let chat = [];
 let chatBusy = false;
 
@@ -1336,19 +1337,29 @@ function showChat(pending) {
       ideas.append(b);
     }
     log.replaceChildren(el("div", { class: "chat-empty" },
-      el("span", {}, "微积分、线性代数、常微分方程、概率、证明……都可以问。偏微分方程或常微分方程要数值求解的话，用上面的“求解”。"), ideas));
+      el("span", {}, "微积分、线性代数、常微分方程、概率、证明……都可以问。说“数值求解……”并给出方程和条件，就会直接交给求解器，结果显示在上面的“求解”面板。"), ideas));
     return;
   }
   log.replaceChildren(...chat.map((m) => m.role === "user"
     ? el("div", { class: "msg user" }, m.content)
-    : el("div", { class: "msg bot" }, el("span", { class: "who" }, m.model || info.llm.name), ...markdown(m.content))));
-  if (pending) log.append(el("div", { class: "msg bot thinking" }, el("span", { class: "spinner", "aria-hidden": "true" }), `${info.llm.name} 正在想…`));
+    : el("div", { class: "msg bot" + (m.solved ? " solved" : "") }, el("span", { class: "who" }, (m.model || info.llm.name) + (m.solved ? " · 已交给求解器" : "")),
+        ...markdown(m.content), ...(m.solved ? [seeResult()] : []))));
+  if (pending) log.append(el("div", { class: "msg bot thinking" }, el("span", { class: "spinner", "aria-hidden": "true" }), `${info.llm.name} 正在想（如果要数值求解，会多花一些时间）…`));
   log.scrollTop = log.scrollHeight;
+}
+
+function seeResult() {
+  const b = el("button", { type: "button", class: "inline-btn" }, "看求解结果 ↑");
+  b.addEventListener("click", () => {
+    const target = $("result").classList.contains("hidden") ? $("solve") : $("result");
+    if (target) target.scrollIntoView({ behavior: "smooth", block: "start" });
+  });
+  return el("p", {}, b);
 }
 
 function showChatNote() {
   $("chat-note").replaceChildren(info.llm.ready
-    ? `偏微分方程求解以外的数学问题，由 ${info.llm.name}（${info.llm.model}）回答`
+    ? `数学问题由 ${info.llm.name}（${info.llm.model}）回答；要数值求解的题会交给求解器`
     : `还没有 ${info.llm.name} 的 API key。`);
   if (!info.llm.ready) {
     const b = el("button", { type: "button", class: "inline-btn" }, "去设置");
@@ -1367,9 +1378,15 @@ async function sendChat() {
   showChat(true);
   try {
     const reply = await api("/api/chat", { messages: chat.map(({ role, content }) => ({ role, content })) });
-    chat.push({ role: "assistant", content: reply.answer, model: reply.model });
+    chat.push({ role: "assistant", content: reply.answer, model: reply.model, solved: !!reply.solve });
     saveChat();
     showChat(false);
+    if (reply.solve) {
+      showReport(reply.solve);
+      try { fillForm(reply.solve.problem); } catch { /* the form keeps what it had */ }
+      loadStats();
+      loadInfo();
+    }
   } catch (e) {
     chat.pop();  // give the question back so it can be sent again
     $("chat-input").value = text;

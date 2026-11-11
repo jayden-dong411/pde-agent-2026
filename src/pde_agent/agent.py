@@ -366,6 +366,10 @@ class PDEAgent:
             order = min(spec.order, prediction.order) if prediction else spec.order
             if adaptive:
                 order = 1.0
+            if estimated and "neural" in spec.traits:
+                # each n is a different random network: the error does not shrink at a steady rate, so the
+                # difference to the coarser answer is taken as the error itself (no Richardson gain)
+                order = 1.0
             if not estimated:
                 error = exact_error(problem, result)
             elif prev is not None:
@@ -412,7 +416,8 @@ class PDEAgent:
             if n >= max_n:
                 return "max_n", n, error, work
             prev, prev_error = result, error if error is not None else prev_error
-            n = min(self._next_n(n, error, target, order), max_n)
+            # a network refines by doubling only: its estimate compares neighbouring sizes (see above)
+            n = min(2 * n if "neural" in spec.traits else self._next_n(n, error, target, order), max_n)
         return "budget", n, error, work
 
     @staticmethod

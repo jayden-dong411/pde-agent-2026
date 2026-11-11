@@ -24,6 +24,8 @@ def _studies():
     for kind, exact, domain, t_final, coeffs, boundary in CASES:
         problem = manufactured_problem(eqs.get(kind), exact, domain, t_final, coeffs, boundary)
         for spec in registry.for_problem(problem):
+            if "neural" in spec.traits:
+                continue  # a network's error has no steady rate in n: checked in test_pinn.py
             if "nonoscillatory" in spec.traits and spec.order > 1:
                 continue  # limiters clip smooth extrema: their max-norm order is checked in test_pde_stages.py
             yield pytest.param(spec, problem, id=f"{spec.name}-{problem.dim}d-{coeffs}")
@@ -66,4 +68,6 @@ def test_builtin_solvers_get_the_same_answer_from_the_solver_view(problem):
     for spec in builtin_registry().for_problem(problem):
         original = spec.solve(problem, n, {}).u
         view = spec.solve(problem.for_solver(), n, {}).u
-        assert np.max(np.abs(original - view)) <= 1e-12 * np.max(np.abs(original))
+        # a network's least-squares fit is ill-conditioned: rounding differences in the derived data grow a little
+        limit = 1e-9 if "neural" in spec.traits else 1e-12
+        assert np.max(np.abs(original - view)) <= limit * np.max(np.abs(original))

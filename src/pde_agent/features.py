@@ -162,6 +162,9 @@ def predict(spec: SolverSpec, problem: PDEProblem, feats: ProblemFeatures, tol: 
         order, notes = 1.0, notes + ["数据不光滑，按一阶估计"]
     if "long" in feats.tags and "dissipative" in spec.traits:
         order, notes = 0.5, notes + ["长时间传播，耗散会累积，按半阶估计"]
+    if "long" in feats.tags and "neural" in spec.traits:
+        # a space-time network has to hold every wave crossing at once: it needs far more units on long runs
+        order, notes = 0.5, notes + ["长时间传播，时空网络要同时表示每一圈，按半阶估计"]
     floor = feats.floor
     if feats.scale > 1 and "adaptive" not in spec.traits:  # more oscillations need proportionally more steps
         floor = min(max_n, floor * 2 ** math.ceil(math.log2(feats.scale) - 1e-9))

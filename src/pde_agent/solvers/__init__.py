@@ -1,9 +1,9 @@
 """Built-in numerical methods for the basic equations and for ODE systems."""
 
-from . import advection, conservation, heat, ode, poisson, wave
+from . import advection, conservation, heat, ode, pinn, poisson, wave
 from .base import SolveResult, SolverDiverged, SolverRegistry, SolverSpec
 
-BUILTIN_SOLVERS = poisson.SOLVERS + heat.SOLVERS + advection.SOLVERS + wave.SOLVERS + conservation.SOLVERS + ode.SOLVERS
+BUILTIN_SOLVERS = poisson.SOLVERS + heat.SOLVERS + advection.SOLVERS + wave.SOLVERS + conservation.SOLVERS + pinn.SOLVERS + ode.SOLVERS
 
 
 def builtin_registry() -> SolverRegistry:

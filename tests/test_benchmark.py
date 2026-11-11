@@ -56,7 +56,9 @@ def test_methods_start_at_the_resolution_floor():
         initial="sin(32*pi*x)", exact="sin(32*pi*x)*exp(-0.0001*(32*pi)**2*t)"))
     for spec in builtin_registry().for_problem(aliased.problem):
         score = score_method(spec, aliased, repeat=1)
-        assert score.runs[0].n == 128 and score.best.n == 128
+        assert score.runs[0].n == 128
+        if "neural" not in spec.traits:  # a network may not fit 16 wavelengths to the tolerance at all
+            assert score.best.n == 128
 
 
 def test_unresolvable_problems_get_no_runs():

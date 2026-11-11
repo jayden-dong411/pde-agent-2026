@@ -10,6 +10,7 @@ from __future__ import annotations
 import json
 import math
 import os
+import re
 import threading
 import webbrowser
 from http import HTTPStatus
@@ -203,11 +204,45 @@ CHAT_SYSTEM = """你是这个偏微分方程求解程序网页里的数学助手
 - 用中文回答，先给结论，再给关键步骤；计算题要写出过程并检查结果。
 - 页面不能显示 LaTeX。公式用纯文本和 Unicode 写，比如 x² + y² = r²、∫₀¹ f(x) dx、∂u/∂t、√2、≤、→、∑ₖ aₖ；需要对齐的推导可以放进 ``` 代码块。
 - 可以用 **加粗**、列表和小标题，不要用表格和图片。
-- 如果用户要数值求解一个偏微分方程或常微分方程（组），告诉他用页面上方的“求解”面板。
+- 如果用户要你**数值求解**一道具体的偏微分方程或常微分方程（组）（给了方程、区域、初值或边界条件，或者要你按前面对话里的题再解一次、改个参数再解），不要自己算，只回复下面这个格式，交给本程序的求解器：
+  第一行：@@SOLVE@@，如果用户提了精度要求，在同一行后面写 tol=数值（比如 @@SOLVE@@ tol=1e-5）
+  后面几行：一段完整、独立的中文题目描述，包括方程、系数、区域、初值、边界条件、终止时间、已知的精确解，不要依赖前面的对话
+  缺条件时不要编，先问用户。求解结果会由程序自动显示给用户。
+- 只是问解析解、概念或推导，正常回答，不要用 @@SOLVE@@。
 - 和数学无关的问题，礼貌地说明这里只回答数学问题。"""
+SOLVE_MARK = "@@SOLVE@@"
 CHAT_TURNS = 20  # messages of history sent to the model
 CHAT_CHARS = 8000  # per message
 CHAT_TOTAL = 40000
+
+
+
+def solve_request(text: str) -> tuple[str, float | None] | None:
+    """The problem text and tolerance when the chat model handed a problem to the solver, else None."""
+    lines = text.strip().splitlines()
+    if not lines or not lines[0].strip().startswith(SOLVE_MARK):
+        return None
+    head = lines[0].strip()[len(SOLVE_MARK):]
+    tol = None
+    found = re.search(r"tol\s*[=:：]\s*([0-9.eE+\-]+)", head)
+    if found:
+        try:
+            tol = float(found.group(1))
+        except ValueError:
+            tol = None
+        if tol is not None and not (math.isfinite(tol) and 0 < tol < 1):
+            tol = None
+    rest = re.sub(r"tol\s*[=:：]\s*[0-9.eE+\-]+", "", head).strip()
+    problem = "\n".join(([rest] if rest else []) + lines[1:]).strip()
+    return (problem, tol) if problem else None
+
+
+def chat_solve_text(problem: str, report: SolveReport) -> str:
+    """What the conversation keeps about a solve, so later turns can refer to it."""
+    verdict = "达到精度" if report.success else "没有达到精度"
+    return (f"**交给求解器的题目**：{problem}\n\n**结果（{verdict}，要求 {report.tol:g}）**：{report.summary()}\n\n"
+            "图和求解过程在上面的“求解”面板。")
+
 
 PREVIEW_POINTS = (129, 65)  # per axis for 1-D and 2-D previews
 
@@ -396,7 +431,20 @@ class AppState:
         except LLMError as exc:
             raise RequestError(self._llm_message(exc), HTTPStatus.BAD_GATEWAY) from exc
         name, _ = PROVIDERS[self.provider]
-        return {"answer": text, "model": f"{name} · {self.model}"}
+        model = f"{name} · {self.model}"
+        request = solve_request(text)
+        if request is None:
+            return {"answer": text, "model": model}
+        problem, tol = request
+        tol = tol if tol is not None else self._tol(payload)
+        with self.lock:
+            try:
+                report = self.agent.ask(problem, tol)
+            except LLMError as exc:
+                return {"answer": f"**交给求解器的题目**：{problem}\n\n没能把它变成求解器能用的题目：{exc}。"
+                                  "可以把条件说得更完整一点再试。", "model": model, "solve": None}
+        self.sync_in_background()
+        return {"answer": chat_solve_text(problem, report), "model": model, "solve": report_json(report)}
 
     def ask(self, payload: dict) -> dict:
         text = str(payload.get("text") or "").strip()

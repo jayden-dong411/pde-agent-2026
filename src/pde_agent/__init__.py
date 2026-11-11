@@ -5,6 +5,6 @@ from .equations import Equation, builtin_equations, manufactured_problem
 from .ode import ODEProblem
 from .problem import PDEProblem
 
-__version__ = "2.0.0"
+__version__ = "2.0.1"
 
 __all__ = ["Equation", "ODEProblem", "PDEAgent", "PDEProblem", "SolveReport", "builtin_equations", "manufactured_problem"]

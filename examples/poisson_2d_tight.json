@@ -1,0 +1,9 @@
+{
+  "kind": "poisson",
+  "domain": [[0, 1], [0, 1]],
+  "source": "2*pi**2*sin(pi*x)*sin(pi*y)",
+  "boundary_value": "0",
+  "exact": "sin(pi*x)*sin(pi*y)",
+  "name": "poisson-2d-tight",
+  "description": "二维 Poisson，精度 1e-9：网格法到不了，PINN 接上"
+}

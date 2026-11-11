@@ -75,7 +75,7 @@ def test_tolerance_out_of_reach_fails_cleanly(tmp_path):
     assert not report.success
     assert report.result is not None and report.error is not None  # best effort is kept
     assert {t["method"] for t in report.trials} == {"heat.ftcs", "heat.backward_euler", "heat.crank_nicolson",
-                                                       "heat.bdf2"}
+                                                       "heat.bdf2", "heat.pinn"}
 
 
 R3 = dict(kind="heat", domain=[(0.0, 1.0)], t_final=0.01, coefficients={"alpha": 1e-4})

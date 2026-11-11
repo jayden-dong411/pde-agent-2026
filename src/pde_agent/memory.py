@@ -63,7 +63,8 @@ class MethodStats:
 _ID = re.compile(r"[0-9a-f]{32}")
 _SIGNATURE = re.compile(r"[a-z][a-z0-9_]{0,40}/[0-3]d/[a-z][a-z0-9_]{0,20}")
 _NAME = re.compile(r"[A-Za-z0-9_.\-]{1,80}")
-_OUTCOMES = {"success", "unstable", "error", "stagnated", "max_n", "budget", "skipped", "crosscheck", "oscillation"}
+_OUTCOMES = {"success", "unstable", "error", "stagnated", "max_n", "budget", "skipped", "crosscheck", "oscillation",
+             "contract", "candidate"}
 _TAG = re.compile(r"[a-z]{1,20}")
 _MEMBER = re.compile(r"[^\s/\\]{1,40}")
 SHARED_WEIGHT = 0.5  # other people's episodes inform the choice, ours decide it

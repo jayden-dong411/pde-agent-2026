@@ -151,7 +151,7 @@ def test_cli_runs_ode_stages_and_exam(tmp_path, capsys):
     path = tmp_path / "stiff.json"
     path.write_text(json.dumps(lesson("ode-stiff-1e6").to_dict()), encoding="utf-8")
     assert main(["--home", home, "solve", str(path)]) == 0
-    assert "成功" in capsys.readouterr().out
+    assert "已验证" in capsys.readouterr().out
 
 
 def test_bench_scores_ode_methods():

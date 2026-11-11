@@ -137,7 +137,20 @@ class EquationBook:
         why = eq.check(problem.coefficients) if eq.check else None
         if why:
             raise ValueError(f"{eq.kind} 方程：{why}")
+        if problem.equation.strip():
+            # the text and the kind are two statements of one operator: they have to agree, or the solver
+            # would quietly solve the kind's equation while the user reads (and expects) the text's
+            conflict = check_operator(eq, problem.equation, problem.coefficients, problem.dim, problem.domain,
+                                      problem.t_final)
+            if conflict:
+                raise ValueError(f"方程文本 {problem.equation!r} 和 {eq.kind} 方程（{eq.form}，系数 "
+                                 f"{_coefficient_text(problem.coefficients)}）不一致：{conflict}。"
+                                 f"请改正文本或系数，或者去掉文本")
         return problem
+
+
+def _coefficient_text(coefficients: dict[str, float]) -> str:
+    return "，".join(f"{k} = {v:g}" for k, v in coefficients.items()) or "无"
 
 
 def builtin_equations() -> EquationBook:

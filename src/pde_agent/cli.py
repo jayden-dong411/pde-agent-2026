@@ -58,7 +58,7 @@ def cmd_curriculum(args) -> int:
     totals: dict[int, list[float]] = {}
     regrets: list[float] = []
     for round_, lesson, report in run_curriculum(agent, lessons, args.rounds, learn=agent.brain is not None):
-        ok = "成功" if report.success else "失败"
+        ok = {"verified": "验证", "candidate": "候选", "failed": "失败"}[report.status]
         print(f"{round_:>2} {lesson.name:<24} {ok:<4} {report.method or '-':<26} {report.n or '-':>5} "
               f"{_fmt(report.error):>9} {report.solver_runs:>8} {report.work:>12.3g}")
         if not report.success:
@@ -67,7 +67,9 @@ def cmd_curriculum(args) -> int:
             print(f"   └ {report.features.describe()}")
         if args.regret and round_ == args.rounds:
             best = best_work(agent.registry, report.problem, lesson.tol)
-            r = regret(report.work, best) if report.success else None
+            # regret judges the choice of method and grid: the verification runs (check_work) are the same
+            # whichever method was chosen, so they are left out
+            r = regret(report.work - report.check_work, best) if report.success else None
             if r is not None:
                 regrets.append(r)
                 print(f"   └ 后悔度 {r:.2f}（最省的是 {best[0]}，一次 {best[1]:.3g}）")
@@ -87,6 +89,9 @@ def cmd_curriculum(args) -> int:
     return 0
 
 
+EXIT_CODES = {"verified": 0, "failed": 1, "candidate": 2}  # candidate: answer found, but not fully verified
+
+
 def cmd_solve(args) -> int:
     data = json.loads(Path(args.problem).read_text(encoding="utf-8"))
     agent = _agent(args)
@@ -99,7 +104,7 @@ def cmd_solve(args) -> int:
     if report.choice():
         print(report.choice())
     print(report.summary())
-    return 0 if report.success else 1
+    return EXIT_CODES[report.status]
 
 
 def cmd_ask(args) -> int:
@@ -112,7 +117,7 @@ def cmd_ask(args) -> int:
     if p.description:
         print(f"假设：{p.description}")
     print(report.summary())
-    return 0 if report.success else 1
+    return EXIT_CODES[report.status]
 
 
 def cmd_learn(args) -> int:

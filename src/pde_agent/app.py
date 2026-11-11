@@ -64,6 +64,8 @@ def report_json(report: SolveReport) -> dict:
     data: dict[str, Any] = {
         "summary": report.summary(),
         "success": report.success,
+        "status": report.status,  # verified | candidate | failed
+        "status_text": report.status_text,
         "method": report.method,
         "n": report.n,
         "error": _num(report.error),
@@ -239,7 +241,7 @@ def solve_request(text: str) -> tuple[str, float | None] | None:
 
 def chat_solve_text(problem: str, report: SolveReport) -> str:
     """What the conversation keeps about a solve, so later turns can refer to it."""
-    verdict = "达到精度" if report.success else "没有达到精度"
+    verdict = report.status_text
     return (f"**交给求解器的题目**：{problem}\n\n**结果（{verdict}，要求 {report.tol:g}）**：{report.summary()}\n\n"
             "图和求解过程在上面的“求解”面板。")
 

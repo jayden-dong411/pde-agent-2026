@@ -53,10 +53,12 @@ def test_correct_answers_pass_on_every_blind_eval_problem(tmp_path):
 
 
 def test_exact_solution_needs_no_crosscheck(tmp_path):
+    """With an exact solution: no residual check, but the exact comparison and the result contract (v2.0.0)."""
     agent = PDEAgent(home=tmp_path, remember=False)
     case = next(c for c in eval_cases(("pde",)) if c.name == "train/heat-1d")
     report = agent.solve(case.problem, case.tol, learn=False)
-    assert report.success and report.crosscheck is None
+    names = [c.name for c in report.crosscheck.checks]
+    assert report.success and names[0] == "exact" and "residual" not in names and "initial" in names
 
 
 def test_wrong_coefficient_is_caught_by_the_residual(tmp_path):

@@ -30,9 +30,11 @@ checks look at the answer itself instead:
   problems, Radau or BDF for stiff ones). An ODE answer has no grid to
   interpolate, but a second opinion from another method family is cheap.
 
-A check that does not apply (3-D, an operator sympy cannot handle) is left
-out, never failed. ``cross_check`` runs them all and says whether the
-answer passes.
+Every check ends in one of three states: pass, fail, or inconclusive (it
+could not be done). The residual check (PDEs) and the reference run (ODEs)
+are required: when one cannot be done the answer is a candidate, never
+verified. ``cross_check`` runs them all; ``contract.py`` adds the checks of
+the problem's own conditions (grid, time, boundary and initial data).
 """
 
 from __future__ import annotations
@@ -63,46 +65,99 @@ ODE_FLOOR = 1e-8
 ODE_STIFF = 50.0  # stiffness above which the reference run uses an implicit method
 
 CHECK_NAMES = {"residual": "残差抽查", "mass": "质量守恒", "energy": "能量守恒", "energy_decay": "能量不增",
-               "reference": "独立积分对照"}
+               "reference": "独立积分对照", "grid": "网格坐标", "time": "返回时间", "boundary": "边界条件",
+               "periodic": "周期条件", "initial": "初值", "initial_velocity": "初速度", "exact": "对比精确解"}
+
+
+STATUS_TEXT = {"pass": "通过", "fail": "没通过", "inconclusive": "无法验证"}
 
 
 @dataclass
 class Check:
-    name: str  # residual | mass | energy | energy_decay
-    value: float  # relative residual or relative drift
+    """One piece of evidence about an answer.
+
+    ``status`` is ``pass``, ``fail`` or ``inconclusive`` (the check could not
+    be done: an exception, a reference run that did not finish, an operator
+    sympy cannot handle). ``required`` checks have to pass for the answer to
+    count as verified; an optional check that cannot run is only reported.
+    """
+
+    name: str  # residual | mass | energy | energy_decay | reference | grid | time | boundary | periodic | initial | initial_velocity
+    value: float  # relative residual or relative drift (nan when inconclusive)
     limit: float
     passed: bool
     detail: str = ""
+    required: bool = True
+    status: str = ""
+
+    def __post_init__(self) -> None:
+        if not self.status:
+            self.status = "pass" if self.passed else "fail"
+        self.passed = self.status == "pass"
+
+    @classmethod
+    def inconclusive(cls, name: str, why: str, required: bool = True, limit: float = math.nan) -> Check:
+        return cls(name, math.nan, limit, False, why, required=required, status="inconclusive")
 
     def describe(self) -> str:
-        mark = "通过" if self.passed else "没通过"
-        return f"{CHECK_NAMES.get(self.name, self.name)} {self.value:.1e}（上限 {self.limit:.0e}，{mark}）"
+        label = CHECK_NAMES.get(self.name, self.name)
+        if self.status == "inconclusive":
+            return f"{label} 无法验证（{self.detail}）"
+        mark = STATUS_TEXT[self.status]
+        return f"{label} {self.value:.1e}（上限 {self.limit:.0e}，{mark}）"
 
     def to_dict(self) -> dict:
         return {"name": self.name, "value": self.value, "limit": self.limit, "passed": self.passed,
-                "detail": self.detail}
+                "status": self.status, "required": self.required, "detail": self.detail}
 
 
 @dataclass
 class CrossCheck:
+    """All the evidence about one answer, and the verdict it adds up to.
+
+    ``status``: ``fail`` when any check failed, ``inconclusive`` when a
+    required check could not be done (or nothing could be checked at all),
+    ``pass`` only when every required check passed. An empty list is never a
+    pass: not being able to check is not the same as checking.
+    """
+
     checks: list[Check] = field(default_factory=list)
     work: float = 0.0
     skipped: str = ""  # why nothing could be checked
 
     @property
+    def status(self) -> str:
+        if any(c.status == "fail" for c in self.checks):
+            return "fail"
+        if not any(c.required for c in self.checks):
+            return "inconclusive"
+        if any(c.required and c.status == "inconclusive" for c in self.checks):
+            return "inconclusive"
+        return "pass"
+
+    @property
     def passed(self) -> bool:
-        return all(c.passed for c in self.checks)
+        return self.status == "pass"
 
     def failed(self) -> list[Check]:
-        return [c for c in self.checks if not c.passed]
+        return [c for c in self.checks if c.status == "fail"]
+
+    def missing(self) -> list[Check]:
+        """Required checks that could not be done."""
+        return [c for c in self.checks if c.required and c.status == "inconclusive"]
+
+    def merge(self, other: CrossCheck) -> CrossCheck:
+        skipped = "；".join(s for s in (self.skipped, other.skipped) if s)
+        return CrossCheck(self.checks + other.checks, self.work + other.work, skipped)
 
     def describe(self) -> str:
         if not self.checks:
-            return f"交叉验证：没有可做的检查（{self.skipped}）" if self.skipped else ""
-        return "交叉验证：" + "；".join(c.describe() for c in self.checks)
+            return f"验证：没有可做的检查（{self.skipped}），结果无法验证" if self.skipped else "验证：没有可做的检查，结果无法验证"
+        return f"验证（{STATUS_TEXT[self.status]}）：" + "；".join(c.describe() for c in self.checks)
 
     def to_dict(self) -> dict:
-        return {"passed": self.passed, "checks": [c.to_dict() for c in self.checks], "skipped": self.skipped}
+        return {"passed": self.passed, "status": self.status, "checks": [c.to_dict() for c in self.checks],
+                "skipped": self.skipped}
 
 
 # --- the operator in terms of the unknown function ----------------------------------
@@ -255,8 +310,8 @@ def residual_check(problem: PDEProblem, result: SolveResult, sym: _Symbolic, tol
     limit = _residual_limit(tol)
     if not np.all(np.isfinite(residual)) or not math.isfinite(scale):
         return Check("residual", math.inf, limit, False, "残差不是有限数")
-    if scale < 1e-12:
-        return None  # every term vanishes: nothing to compare with
+    if scale < 1e-12:  # every term vanishes: the equation holds exactly
+        return Check("residual", 0.0, limit, True, "方程各项都为 0")
     value = float(np.sqrt(np.mean(residual**2))) / scale
     return Check("residual", value, limit, value <= limit, f"{PROBES} 个网格点之间的随机点")
 
@@ -397,7 +452,8 @@ def drift_checks(laws: list[str], equation, problem: PDEProblem, result: SolveRe
         mass = _grid_integral(result.u, result)
         size = volume * max(float(np.max(np.abs(u0))), float(np.max(np.abs(result.u))), 1e-300)
         value = abs(mass - expected) / size
-        checks.append(Check("mass", value, limit, value <= limit, f"∫u 末时刻 {mass:.6g}，应为 {expected:.6g}"))
+        checks.append(Check("mass", value, limit, value <= limit, f"∫u 末时刻 {mass:.6g}，应为 {expected:.6g}",
+                            required=False))
 
     if "energy" in laws and equation.time_order == 1 or "energy_decay" in laws:
         e0 = 0.5 * _integrate(u0**2, axes)
@@ -406,11 +462,12 @@ def drift_checks(laws: list[str], equation, problem: PDEProblem, result: SolveRe
             drift = (e1 - e0) / e0
             if "energy" in laws:
                 value = abs(drift)
-                checks.append(Check("energy", value, limit, value <= limit, f"½∫u² 从 {e0:.6g} 变成 {e1:.6g}"))
+                checks.append(Check("energy", value, limit, value <= limit, f"½∫u² 从 {e0:.6g} 变成 {e1:.6g}",
+                                    required=False))
             else:
                 value = max(drift, 0.0)
                 checks.append(Check("energy_decay", value, limit, value <= limit,
-                                    f"½∫u² 从 {e0:.6g} 变成 {e1:.6g}（只许减少）"))
+                                    f"½∫u² 从 {e0:.6g} 变成 {e1:.6g}（只许减少）", required=False))
 
     if "energy" in laws and equation.time_order == 2 and sym is not None:
         try:
@@ -432,39 +489,51 @@ def drift_checks(laws: list[str], equation, problem: PDEProblem, result: SolveRe
             return checks
         if e0 > 1e-300:
             value = abs(e1 - e0) / e0
-            checks.append(Check("energy", value, limit, value <= limit, f"能量从 {e0:.6g} 变成 {e1:.6g}"))
+            checks.append(Check("energy", value, limit, value <= limit, f"能量从 {e0:.6g} 变成 {e1:.6g}",
+                                required=False))
     return checks
 
 
 def cross_check(equation, spec: SolverSpec, problem: PDEProblem, result: SolveResult, tol: float,
                 options: dict | None = None) -> CrossCheck:
-    """All checks that apply to this answer. Never raises: a check that cannot run is left out."""
+    """All checks that apply to this answer. Never raises.
+
+    The residual spot check is required: when it cannot be done (3-D, an
+    operator sympy cannot handle, an error while interpolating) it is recorded
+    as inconclusive, so the answer can be a candidate but not verified. The
+    conservation checks are optional evidence, but a failed one still fails.
+    """
     out = CrossCheck()
     if problem.dim == 0:
         return ode_check(spec, problem, result, tol)
+    limit = _residual_limit(tol)
     if problem.dim == 3:
         out.skipped = "三维问题"
+        out.checks.append(Check.inconclusive("residual", "三维问题还不能做残差抽查", limit=limit))
         return out
     if equation is None:
         out.skipped = "不知道方程的算子"
+        out.checks.append(Check.inconclusive("residual", "不知道方程的算子", limit=limit))
         return out
     sym = symbolic_operator(equation, problem.coefficients, problem.dim)
     neighbours = Neighbours(spec, problem, result, options) if problem.time_dependent else None
-    if sym is not None:
+    if sym is None:
+        out.checks.append(Check.inconclusive("residual", "算子太特殊，没法代回方程", limit=limit))
+    else:
         try:
             check = residual_check(problem, result, sym, tol, neighbours)
-            if check is not None:
-                out.checks.append(check)
-        except Exception:
-            pass
+            out.checks.append(check if check is not None else
+                              Check.inconclusive("residual", "缺少时间导数需要的相邻时刻", limit=limit))
+        except Exception as exc:
+            out.checks.append(Check.inconclusive("residual", f"残差抽查出错：{type(exc).__name__}", limit=limit))
     try:
         out.checks += drift_checks(conservation_laws(equation, problem, sym), equation, problem, result, sym, tol,
                                    neighbours)
-    except Exception:
-        pass
+    except Exception as exc:
+        out.checks.append(Check.inconclusive("mass", f"守恒检查出错：{type(exc).__name__}", required=False))
     out.work = neighbours.work if neighbours else 0.0
-    if not out.checks:
-        out.skipped = "算子太特殊，没法代回检查"
+    if out.missing():
+        out.skipped = "；".join(c.detail for c in out.missing())
     return out
 
 
@@ -486,11 +555,13 @@ def ode_check(spec: SolverSpec, problem, result: SolveResult, tol: float) -> Cro
                             atol=rtol * scale * 1e-3, **({"jac": problem.jac} if stiff else {}))
     except Exception as exc:
         out.skipped = f"参考积分出错：{type(exc).__name__}"
+        out.checks.append(Check.inconclusive("reference", out.skipped, limit=max(ODE_FACTOR * tol, ODE_FLOOR)))
         return out
     c = problem.costs
     out.work = float(sol.nfev * c["f"] + getattr(sol, "njev", 0) * c["jac"] + getattr(sol, "nlu", 0) * c["lu"])
     if not sol.success or not np.all(np.isfinite(sol.y[:, -1])):
         out.skipped = "参考积分没有算完"
+        out.checks.append(Check.inconclusive("reference", out.skipped, limit=max(ODE_FACTOR * tol, ODE_FLOOR)))
         return out
     reference = sol.y[:, -1]
     size = float(np.max(np.abs(reference)))

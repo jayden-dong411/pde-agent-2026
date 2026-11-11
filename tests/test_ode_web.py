@@ -77,7 +77,7 @@ def test_the_page_solves_an_ode_and_gets_a_trajectory(server):
     data = post(server, "/api/solve", {"problem": {"kind": "ode", "rhs": "\n".join(vdp.rhs), "initial": ", ".join(vdp.initial),
                                                    "t_final": vdp.t_final, "coefficients": vdp.coefficients}, "tol": 1e-3})
     assert data["success"] and data["error_kind"] == "estimated"
-    assert data["crosscheck"]["passed"] and data["crosscheck"]["checks"][0]["name"] == "reference"
+    assert data["crosscheck"]["passed"] and "reference" in [c["name"] for c in data["crosscheck"]["checks"]]
     s = data["solution"]
     assert s["dim"] == 0 and s["names"] == ["y1", "y2"] and len(s["u"]) == 2 and s["exact"] is None
     end = np.array(s["trajectory"]["y"])[:, -1]

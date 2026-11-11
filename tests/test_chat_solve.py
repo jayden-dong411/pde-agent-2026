@@ -35,7 +35,7 @@ def test_chat_solves_a_problem(serve):  # noqa: F811
     report = data["solve"]
     assert report["success"] and report["tol"] == 1e-3 and report["problem"]["kind"] == "heat"
     assert report["solution"]["t"] == pytest.approx(0.5)
-    assert "交给求解器的题目" in data["answer"] and "达到精度" in data["answer"]
+    assert "交给求解器的题目" in data["answer"] and "已验证" in data["answer"]
     parse_messages = client.calls[1]["messages"]
     assert "一根长 1 的杆" in parse_messages[-1]["content"]  # the self-contained text is parsed, not the chat
 

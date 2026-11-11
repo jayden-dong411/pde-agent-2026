@@ -41,7 +41,7 @@ from .problem import PDEProblem
 from .skills import SkillLibrary, SkillTask, ValidationReport, validate_candidate
 from .solvers import builtin_registry
 from .solvers.base import SolverDiverged, SolveResult, SolverSpec
-from .verify import exact_error, relative_error, resolution_floor, restrict
+from .verify import OSCILLATION_LIMIT, error_norm, exact_error, new_extrema, relative_error, resolution_floor, restrict
 
 ROUGH_SAFETY = 2.0  # an estimated error on non-smooth data must be below tol / ROUGH_SAFETY
 
@@ -58,6 +58,7 @@ OUTCOMES = {
     "budget": "用完计算预算",
     "skipped": "按题目特征判断达不到精度，没有运行",
     "crosscheck": "误差估计达标，但交叉验证没通过",
+    "oscillation": "间断附近出现数值振荡（新的极值）",
 }
 CROSSCHECK_RETRIES = 1  # refinements after a failed cross-check before the method is given up
 
@@ -206,7 +207,9 @@ class PDEAgent:
         # an estimate's coarse companion is the first grid (BASE_N // 2), so it has to see the data too
         start = max(4, BASE_N[problem.dim] // 2) if report.error_kind == "estimated" else BASE_N[problem.dim]
         # an ODE has no grid data to resolve
-        floor = start if problem.dim == 0 else resolution_floor(problem, tol, time_order, start, MAX_N[problem.dim])
+        # a jump never resolves on any grid; in L1 it only costs O(h), which the error measures anyway
+        floor = start if problem.dim == 0 or error_norm(problem) == "l1" else resolution_floor(
+            problem, tol, time_order, start, MAX_N[problem.dim])
         if floor is None:
             report.message = f"题目数据在最细网格（n = {MAX_N[problem.dim]}）上也分辨不清，没有求解"
             self._remember(report)
@@ -318,8 +321,11 @@ class PDEAgent:
         max_n = MAX_N[problem.dim]
         tags = report.features.tags if report.features else None
         prediction = report.predictions.get(spec.name)
-        n = (self.memory.suggest_n(problem.signature(), spec, tol, report.error_kind, tags)
-             or (prediction.start if prediction else BASE_N[problem.dim]))
+        suggested = self.memory.suggest_n(problem.signature(), spec, tol, report.error_kind, tags)
+        # experience covers the whole problem class; when this problem's own features predict a coarser
+        # start, take it: a start too coarse costs one cheap run, one too fine costs the whole difference
+        n = min(suggested, prediction.start) if suggested and prediction else (
+            suggested or (prediction.start if prediction else BASE_N[problem.dim]))
         if estimated:
             n //= 2  # the estimate needs a coarser companion solution
         n = min(max(4, report.min_n, n), max_n // 2 if estimated else max_n)
@@ -330,6 +336,7 @@ class PDEAgent:
         # an adaptive method's error does not shrink smoothly with its tolerance (it can stall for a step, then
         # drop): its estimate is the plain difference, and it has to hold on two refinements in a row
         adaptive = estimated and "adaptive" in spec.traits
+        norm = error_norm(problem)
         confirmed = False
         retries = CROSSCHECK_RETRIES
         prev: SolveResult | None = None
@@ -347,6 +354,13 @@ class PDEAgent:
                 report.attempts.append(Attempt(spec.name, n, "error", message=f"{type(exc).__name__}: {exc}"[:300]))
                 return "error", n, None, work
             work += result.work
+            if norm == "l1":
+                overshoot = new_extrema(problem, result)
+                if overshoot is not None and overshoot > OSCILLATION_LIMIT:
+                    # a wrong shape, not an inaccurate one: refining makes the wiggles narrower, not smaller
+                    report.attempts.append(Attempt(spec.name, n, "oscillation", None, result.work, result.runtime,
+                                                   message=f"超出初值和边界值范围 {overshoot:.1%}"))
+                    return "oscillation", n, None, work
 
             # rough data cost a method its claimed order: the estimate uses the features' order too
             order = min(spec.order, prediction.order) if prediction else spec.order
@@ -356,7 +370,7 @@ class PDEAgent:
                 error = exact_error(problem, result)
             elif prev is not None:
                 ratio = n / prev.n
-                diff = relative_error(prev.u, restrict(result, prev.n))
+                diff = relative_error(prev.u, restrict(result, prev.n), norm)
                 if prev_diff and diff > 0:
                     # trust the observed rate when it is lower than claimed (the refinement ratios may differ)
                     seen = None if adaptive else observed_rate(prev_diff, diff, prev_ratio, ratio)

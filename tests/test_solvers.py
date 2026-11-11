@@ -24,6 +24,8 @@ def _studies():
     for kind, exact, domain, t_final, coeffs, boundary in CASES:
         problem = manufactured_problem(eqs.get(kind), exact, domain, t_final, coeffs, boundary)
         for spec in registry.for_problem(problem):
+            if "nonoscillatory" in spec.traits and spec.order > 1:
+                continue  # limiters clip smooth extrema: their max-norm order is checked in test_pde_stages.py
             yield pytest.param(spec, problem, id=f"{spec.name}-{problem.dim}d-{coeffs}")
 
 

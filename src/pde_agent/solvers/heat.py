@@ -95,6 +95,37 @@ def solve_crank_nicolson(problem: PDEProblem, n: int, options: dict) -> SolveRes
     return _implicit(problem, n, options, theta=0.5, name="heat.crank_nicolson", cfl=1.0)
 
 
+def solve_bdf2(problem: PDEProblem, n: int, options: dict) -> SolveResult:
+    """Second-order BDF: L-stable, so jumps in the initial data are damped instead of ringing as in Crank-Nicolson.
+
+    The first step is two backward Euler half steps (enough for second order overall).
+    """
+    s = _Setup(problem, n)
+    steps, dt = time_grid(s.t_final, options.get("cfl", 1.0) * s.h)
+    m = s.inner.size
+    lap = laplacian_1d(m, s.h)
+    eye = sparse.identity(m, format="csc")
+    half = splu((eye - 0.5 * dt * s.alpha * lap).tocsc())
+    lhs = splu((eye - (2.0 / 3.0) * dt * s.alpha * lap).tocsc())
+    limit = growth_limit(s.u0, s.f(s.x, 0.0, 0.0))
+
+    def forcing(t: float) -> np.ndarray:
+        return s.alpha * s.boundary_vector(t) + s.f(s.inner, 0.0, t)
+
+    older = s.u0[1:-1].copy()
+    u = older
+    for t_new in (0.5 * dt, dt):
+        u = half.solve(u + 0.5 * dt * forcing(t_new))
+    for k in range(1, steps):
+        t_new = (k + 1) * dt
+        rhs = (4.0 * u - older) / 3.0 + (2.0 / 3.0) * dt * forcing(t_new)
+        older, u = u, lhs.solve(rhs)
+        if k % 64 == 0:
+            check_growth(u, limit, "heat.bdf2", k)
+    check_growth(u, limit, "heat.bdf2", steps)
+    return s.result(u, steps, dt, {"cfl": dt / s.h})
+
+
 def _h(problem: PDEProblem, n: int) -> float:
     return (problem.domain[0][1] - problem.domain[0][0]) / n
 
@@ -121,6 +152,23 @@ def damping_crank_nicolson(problem: PDEProblem, n: int, k: float) -> float:
     steps = max(1, math.ceil(problem.t_final / dt - 1e-9))
     z = _alpha(problem) * (problem.t_final / steps) * k**2
     return abs((1 - z / 2) / (1 + z / 2)) ** steps
+
+
+def cost_bdf2(problem: PDEProblem, n: int) -> float:
+    return step_work(problem, n, 1.0 * _h(problem, n)) + (n + 1)  # one extra solve to start
+
+
+def damping_bdf2(problem: PDEProblem, n: int, k: float) -> float:
+    """What is left of the mode sin(kx) at t_final: the larger root of (1 + 2z/3) r^2 - 4r/3 + 1/3 = 0, per step.
+
+    BDF2 is L-stable: for a fast mode (large z) both roots go to zero, unlike Crank-Nicolson's -1.
+    """
+    dt = 1.0 * _h(problem, n)
+    steps = max(1, math.ceil(problem.t_final / dt - 1e-9))
+    z = _alpha(problem) * (problem.t_final / steps) * k**2
+    roots = np.roots([1 + 2 * z / 3, -4 / 3, 1 / 3])
+    start = 1.0 / (1.0 + z / 2) ** 2  # two backward Euler half steps
+    return start * float(np.max(np.abs(roots))) ** max(0, steps - 1)
 
 
 SOLVERS = (
@@ -154,5 +202,16 @@ SOLVERS = (
         cost=cost_crank_nicolson,
         damping=damping_crank_nicolson,
         description="Implicit Crank-Nicolson, second order in space and time",
+    ),
+    SolverSpec(
+        name="heat.bdf2",
+        kind="heat",
+        dims=(1,),
+        boundaries=("dirichlet",),
+        order=2.0,
+        solve=solve_bdf2,
+        cost=cost_bdf2,
+        damping=damping_bdf2,
+        description="Implicit BDF2, second order and L-stable: damps jumps in the initial data without ringing",
     ),
 )

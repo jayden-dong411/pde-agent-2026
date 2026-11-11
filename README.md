@@ -7,8 +7,9 @@
 | 方程 | 形式（`L(u) = f`） | 内置方法（收敛阶） |
 | --- | --- | --- |
 | Poisson（1D、2D，Dirichlet 边界） | `-k Δu = f` | `poisson.fd2` 中心差分 + 稀疏直接解（2） |
-| 热方程（1D，Dirichlet） | `u_t = α u_xx + f` | `heat.ftcs` 显式（2）、`heat.backward_euler`（1）、`heat.crank_nicolson`（2） |
-| 对流方程（1D，周期边界） | `u_t + c u_x = f` | `advection.upwind`（1）、`advection.lax_wendroff`（2） |
+| 热方程（1D，Dirichlet） | `u_t = α u_xx + f` | `heat.ftcs` 显式（2）、`heat.backward_euler`（1）、`heat.crank_nicolson`（2）、`heat.bdf2`（2，L-稳定，初值有间断时不振荡） |
+| 对流方程（1D，周期边界） | `u_t + c u_x = f` | `advection.upwind`（1）、`advection.lax_wendroff`（2）、`advection.rk4_central4`（4，方法线）；有间断时另有 `advection.muscl`（2）、`advection.weno5`（3） |
+| 无黏 Burgers（1D，周期或 Dirichlet） | `u_t + (u²/2)_x = f` | 有限体积激波捕捉：`burgers_inviscid.rusanov`（1）、`burgers_inviscid.muscl`（2，minmod 限制器）、`burgers_inviscid.weno5`（3） |
 | 波动方程（1D，Dirichlet） | `u_tt = c² u_xx + f` | `wave.leapfrog`（2） |
 | 常微分方程组（初值问题） | `y' = f(t, y)` | 显式：`ode.euler`（1）、`ode.heun`（2）、`ode.rk4`（4）、`ode.verlet`（2，辛方法）、`ode.rk45`（自适应）；隐式：`ode.backward_euler`（1）、`ode.trapezoid`（2）、`ode.bdf2`（2）、`ode.radau`、`ode.bdf`（自适应） |
 
@@ -60,6 +61,19 @@ pde-agent curriculum --exam
 
 强刚性的题（刚性比 2000 以上）一个显式方法都没试，第一次就用隐式方法解出；中等刚性的题上显式方法只要几百步就稳定，agent 有时会探索它。
 
+偏微分方程第 2–4 阶段（v1.6.0）：抛物型（扩散系数从 0.01 到 10、方波初值）、光滑双曲（短时间、绕 10 圈、严格精度）、有间断和激波的双曲方程（对流方波、无黏 Burgers 的激波和稀疏波）。练两轮，再考 8 道没练过的题，并算**后悔度**（agent 整个求解过程的工作量 ÷ 最省方法在合适网格上跑一次的工作量）：
+
+```
+pde-agent curriculum --pde --rounds 2
+第 1 轮：成功 13/13，共求解 20 次，工作量 4.48e+06
+第 2 轮：成功 13/13，共求解 19 次，工作量 8.86e+06
+pde-agent curriculum --pde --exam --regret
+第 1 轮：成功 8/8，共求解 14 次，工作量 1.66e+07
+后悔度（最后一轮，7 道有精确解的题）：几何平均 1.44，最大 3.88；过关标准：几何平均 ≤ 1.5 且没有一道 > 4
+```
+
+有间断和激波的题用 **L1 误差**（最大范数误差在激波处不随网格收敛），并且**不许出现新的极值**：Lax–Wendroff 和四阶中心差分在方波上超出初值范围 11%–30%，算失败，换下一个方法；题目特征里看到间断时，这两个方法直接不试。
+
 ## 快速开始
 
 ```bash
@@ -76,6 +90,8 @@ pde-agent skills                   # 看已知的方程和方法
 pde-agent solve examples/heat_rod.json --tol 1e-4
 pde-agent curriculum --ode         # 常微分方程：第 0 阶段（不刚性）和第 1 阶段（刚性）
 pde-agent curriculum --exam        # 第 0、1 阶段的期末考
+pde-agent curriculum --pde         # 偏微分方程第 2–4 阶段：抛物型、光滑双曲、激波
+pde-agent curriculum --pde --exam --regret   # 第 2–4 阶段期末考，并算后悔度
 pde-agent solve examples/stiff_ode.json   # 刚性的 Van der Pol 振子
 
 # 下面这些需要大模型（见“接入大模型”）
@@ -307,6 +323,6 @@ v1.0.0 修复了通读 v0.13.0 代码时发现的错误。完整说明（包括�
 - [x] 网页支持常微分方程（v1.3.0）：表单、作图、一句话描述，大模型学 ODE 技能，ODE 交叉验证
 - [x] 代价模型用同类题的历史实测修正（v1.4.0）：相近题的“实测 ÷ 估计”比值，按预期工作量选方法
 - [x] 问答能调用求解（v1.5.0）：在数学问答里说题，大模型交给求解器，结果显示在求解面板，可以接着改参数再解
-- [ ] 课程第 2–4 阶段：抛物型、光滑双曲、有激波的双曲方程
+- [x] 课程第 2–4 阶段（v1.6.0）：抛物型、光滑双曲、有激波的双曲方程；新方法 BDF2、RK4 方法线、Rusanov / MUSCL / WENO5；L1 误差和振荡检查；后悔度
 - [ ] 网页里的求解放进独立进程：硬超时、可以取消、能看进度
 - [ ] PINN 作为一种技能（纯 numpy）

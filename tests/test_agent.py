@@ -42,8 +42,9 @@ def test_features_pick_the_cheapest_method_and_experience_keeps_it(tmp_path):
     # explicit steps cost alpha/h^2 and backward Euler is first order: both predicted far dearer, so not explored first
     assert first.method == "heat.crank_nicolson" and first.solver_runs == 1
     assert first.predictions["heat.ftcs"].work > 8 * first.predictions["heat.crank_nicolson"].work
-    # the lesson survives a restart because experience is stored on disk
-    report = PDEAgent(home=tmp_path).solve(heat_problem(), tol=1e-4)
+    # the lesson survives a restart because experience is stored on disk (without exploring BDF2, which the
+    # cost model rates as dear as Crank-Nicolson and an exploring agent would try next)
+    report = PDEAgent(home=tmp_path, explore=False).solve(heat_problem(), tol=1e-4)
     assert report.method == "heat.crank_nicolson" and report.solver_runs == 1
 
 
@@ -73,7 +74,8 @@ def test_tolerance_out_of_reach_fails_cleanly(tmp_path):
     report = agent.solve(heat_problem(), tol=1e-13)
     assert not report.success
     assert report.result is not None and report.error is not None  # best effort is kept
-    assert {t["method"] for t in report.trials} == {"heat.ftcs", "heat.backward_euler", "heat.crank_nicolson"}
+    assert {t["method"] for t in report.trials} == {"heat.ftcs", "heat.backward_euler", "heat.crank_nicolson",
+                                                       "heat.bdf2"}
 
 
 R3 = dict(kind="heat", domain=[(0.0, 1.0)], t_final=0.01, coefficients={"alpha": 1e-4})

@@ -32,7 +32,8 @@ import time
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from .crosscheck import CrossCheck, cross_check
+from .contract import CONTRACT_CHECKS, result_contract
+from .crosscheck import Check, CrossCheck, cross_check
 from .equations import builtin_equations, operator_from_text
 from .features import Prediction, ProblemFeatures, calibrate, extract, predict
 from .llm import LLMError
@@ -58,6 +59,8 @@ OUTCOMES = {
     "budget": "用完计算预算",
     "skipped": "按题目特征判断达不到精度，没有运行",
     "crosscheck": "误差估计达标，但交叉验证没通过",
+    "contract": "结果不满足题目条件（边界、初值、时间或坐标不对）",
+    "candidate": "得到候选解，但必要的验证没能完成",
     "oscillation": "间断附近出现数值振荡（新的极值）",
 }
 CROSSCHECK_RETRIES = 1  # refinements after a failed cross-check before the method is given up
@@ -87,6 +90,9 @@ class LearnOutcome:
     message: str = ""
 
 
+STATUS = {"verified": "已验证", "candidate": "候选解（未完成验证）", "failed": "失败"}
+
+
 @dataclass
 class SolveReport:
     problem: PDEProblem
@@ -104,8 +110,20 @@ class SolveReport:
     min_n: int = 0  # resolution floor: the first grid that resolves the problem's data (0 if no grid does)
     features: ProblemFeatures | None = None
     predictions: dict[str, Prediction] = field(default_factory=dict)
-    crosscheck: CrossCheck | None = None  # of the answer (estimated errors only)
-    check_work: float = 0.0  # work of the extra runs the cross-checks needed
+    crosscheck: CrossCheck | None = None  # all verification evidence about the answer (contract + cross-checks)
+    check_work: float = 0.0  # work of the extra runs the checks needed
+    candidate: bool = False  # an answer met the error target, but a required check could not be done
+
+    @property
+    def status(self) -> str:
+        """verified | candidate | failed: how far the answer can be trusted."""
+        if self.success:
+            return "verified"
+        return "candidate" if self.candidate else "failed"
+
+    @property
+    def status_text(self) -> str:
+        return STATUS[self.status]
 
     @property
     def solver_runs(self) -> int:
@@ -138,13 +156,17 @@ class SolveReport:
         name = self.problem.name or self.problem.signature()
         learned = [o.solver for o in self.learned if o.success]
         extra = f"，新学会 {', '.join(learned)}" if learned else ""
+        how = "对比精确解" if self.error_kind == "exact" else "加密网格估计"
         if self.success:
-            how = "对比精确解" if self.error_kind == "exact" else "加密网格估计"
             checked = f"。{self.crosscheck.describe()}" if self.crosscheck and self.crosscheck.describe() else ""
-            return (f"{name}：成功，方法 {self.method}，n={self.n}，误差 {self.error:.2e}（{how}），"
+            return (f"{name}：已验证，方法 {self.method}，n={self.n}，误差 {self.error:.2e}（{how}），"
                     f"求解 {self.solver_runs} 次{extra}{checked}")
+        if self.candidate:
+            missing = "；".join(c.describe() for c in self.crosscheck.missing()) if self.crosscheck else ""
+            return (f"{name}：候选解（未完成验证），方法 {self.method}，n={self.n}，误差 {self.error:.2e}（{how}），"
+                    f"求解 {self.solver_runs} 次{extra}。没能完成的必要检查：{missing or '无'}")
         checked = f"。最后一次{self.crosscheck.describe()}" if self.crosscheck and self.crosscheck.checks else ""
-        return f"{name}：未成功，{self.message}{extra}{checked}"
+        return f"{name}：失败，{self.message}{extra}{checked}"
 
 
 def observed_rate(d_prev: float, d: float, r_prev: float, r: float) -> float | None:
@@ -312,6 +334,12 @@ class PDEAgent:
             })
             if outcome == "success":
                 return
+            if outcome == "candidate":
+                # a required check cannot be done for this problem (3-D, an unreadable operator, a reference
+                # run that does not finish): another method would meet the same wall, so stop here
+                missing = "；".join(c.describe() for c in report.crosscheck.missing()) if report.crosscheck else ""
+                report.message = f"得到候选解，但必要的验证没能完成（{missing}）"
+                return
         tried = "；".join(f"{t['method']} {OUTCOMES[t['outcome']]}" for t in report.trials)
         report.message = f"没有方法达到精度 {report.tol:g}（{tried or '时间预算用完'}）"
 
@@ -380,7 +408,12 @@ class PDEAgent:
                     seen = None if adaptive else observed_rate(prev_diff, diff, prev_ratio, ratio)
                     if seen is not None:
                         order = min(order, max(0.5, seen))
-                error = diff / (ratio**order - 1.0)
+                if adaptive or "neural" in spec.traits:
+                    # no steady rate to extrapolate with: the difference itself is the estimate, whatever
+                    # the refinement ratio (dividing by ratio**order - 1 would shrink it 3x for 4x, 7x for 8x)
+                    error = diff
+                else:
+                    error = diff / (ratio**order - 1.0)
                 prev_diff, prev_ratio = diff, ratio
             report.attempts.append(Attempt(
                 spec.name, n, "ok" if error is not None else "unverified", error, result.work, result.runtime,
@@ -390,15 +423,26 @@ class PDEAgent:
             if adaptive:
                 confirmed = error is not None and error <= target
             checked = None
-            if met and estimated:
-                # the estimate only sees how the answer changes on refinement: check the answer itself
-                checked = cross_check(self.equations.get(problem.kind), spec, problem, result, tol, options)
+            if met:
+                # an error that meets the target says the answer converged, not that it answers this problem:
+                # check the problem's own conditions, and (without an exact solution) the answer itself
+                equation = self.equations.get(problem.kind)
+                checked = result_contract(equation, spec, problem, result, tol, options)
+                if estimated:
+                    checked = checked.merge(cross_check(equation, spec, problem, result, tol, options))
+                else:
+                    checked.checks.insert(0, Check("exact", error, target, True, "终止时刻与精确解的相对误差"))
                 report.check_work += checked.work
                 work += checked.work
                 report.crosscheck = checked
-                if not checked.passed:
+                if checked.status == "fail":
                     met = False
                     report.attempts[-1].message = checked.describe()
+                elif checked.status == "inconclusive":
+                    report.result, report.error, report.n, report.method = result, error, n, spec.name
+                    report.candidate = True
+                    report.attempts[-1].message = checked.describe()
+                    return "candidate", n, error, work
             if error is not None and (report.error is None or error < report.error or met):
                 report.result, report.error, report.n, report.method = result, error, n, spec.name
             if met:
@@ -406,7 +450,8 @@ class PDEAgent:
                 return "success", n, error, work
             if checked is not None and not checked.passed:
                 if retries <= 0 or n >= max_n:
-                    return "crosscheck", n, error, work
+                    broken = any(c.name in CONTRACT_CHECKS for c in checked.failed())
+                    return ("contract" if broken else "crosscheck"), n, error, work
                 retries -= 1
                 prev, prev_error = result, error
                 n = min(2 * n, max_n)
@@ -436,6 +481,7 @@ class PDEAgent:
             "problem": report.problem.to_dict(),
             "tol": report.tol,
             "success": report.success,
+            "status": report.status,
             "method": report.method if report.success else None,
             "n": report.n,
             "error": report.error,

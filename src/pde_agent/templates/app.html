@@ -11,6 +11,7 @@
   --accent: #0e6b6b; --accent-ink: #0b5656; --accent-soft: #e3f0ee; --on-accent: #ffffff;
   --s2: #6b4fb8; --s3: #b7791f; --s4: #2f6fb0; --s5: #b5446e; --s6: #4d7c2a;
   --exact: #c4511f; --ok: #1a6a43; --ok-soft: #e2f2e9; --bad: #b42318; --bad-soft: #fbe9e7;
+  --warn: #8a5a00; --warn-soft: #fbf0d9;
   --bar: #14212b; --bar-raised: #22323e; --bar-line: #3a4a56; --bar-ink: #f3f4f1; --bar-muted: #b9c4cc; --bar-accent: #7fc4bc;
   --hero: #14212b; --hero-ink: #f3f4f1; --hero-muted: #b9c4cc; --hero-accent: #7fc4bc;
   --sans: "IBM Plex Sans", -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Hiragino Sans GB", "Noto Sans SC", "Microsoft YaHei", sans-serif;
@@ -25,6 +26,7 @@
     --accent: #4fb3a8; --accent-ink: #8fd6cd; --accent-soft: #173a3a; --on-accent: #0b1a1a;
     --s2: #b39ddb; --s3: #e6b450; --s4: #7fb2e5; --s5: #e889ad; --s6: #9ccc65;
     --exact: #f0915e; --ok: #63c99a; --ok-soft: #173326; --bad: #f2867a; --bad-soft: #3a1d1a;
+    --warn: #e9b75a; --warn-soft: #382a10;
     --bar: #0b1116; --bar-raised: #1c2831; --bar-line: #2a3742;
     --hero: #0b1116; --hero-ink: #e8edf0;
     color-scheme: dark;
@@ -164,6 +166,7 @@ details.more .inner { display: flex; flex-direction: column; gap: 12px; padding-
 .badge { display: inline-flex; align-items: center; gap: 6px; padding: 3px 10px; border-radius: 999px; font-size: 13px; font-weight: 500; }
 .badge.ok { background: var(--ok-soft); color: var(--ok); }
 .badge.bad { background: var(--bad-soft); color: var(--bad); }
+.badge.warn { background: var(--warn-soft); color: var(--warn); }
 .result-meta { font-size: 13px; color: var(--muted); }
 .message { margin: 0; font-size: 13px; color: var(--muted); }
 .stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: 12px; }
@@ -206,6 +209,7 @@ canvas { width: 100%; height: auto; image-rendering: pixelated; border-radius: 8
 .num { flex: none; width: 24px; height: 24px; border-radius: 50%; background: var(--accent-soft); color: var(--accent-ink); font-size: 12px; font-weight: 600; display: flex; align-items: center; justify-content: center; }
 .num.ok { background: var(--ok-soft); color: var(--ok); }
 .num.bad { background: var(--bad-soft); color: var(--bad); }
+.num.warn { background: var(--warn-soft); color: var(--warn); }
 .step-body { min-width: 0; flex: 1; }
 .step-line { display: flex; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
 .step-line b { font-weight: 500; }
@@ -902,8 +906,12 @@ function showReport(r) {
   $("empty").classList.add("hidden");
   $("result").classList.remove("hidden");
   const badge = $("badge");
-  badge.className = "badge " + (r.success ? "ok" : "bad");
-  badge.textContent = r.success ? "✓ 达到精度" : "没有达到精度";
+  // verified: error target met and every required check passed; candidate: target met but a required
+  // check could not be done; failed: with the reason in the message and the steps below
+  const look = { verified: ["ok", "✓ 已验证"], candidate: ["warn", "候选解（未完成验证）"], failed: ["bad", "失败"] };
+  const [cls, label] = look[r.status] || look.failed;
+  badge.className = "badge " + cls;
+  badge.textContent = label;
   $("result-meta").textContent = `${r.problem.name || r.problem.kind} · 用时 ${fmt(r.runtime)} 秒`;
   const message = r.message || "";
   $("message").textContent = message;
@@ -941,10 +949,12 @@ function showReport(r) {
   }
   if (r.crosscheck && (r.crosscheck.checks.length || r.crosscheck.text)) {
     const cc = r.crosscheck;
+    const mark = { pass: ["ok", "✓", "通过"], fail: ["bad", "✗", "没通过"], inconclusive: ["warn", "?", "无法验证"] };
+    const [cls, sign, word] = mark[cc.status] || mark.inconclusive;
     steps.push(el("li", {},
-      el("span", { class: "num " + (cc.passed ? "ok" : "bad") }, "✓"),
+      el("span", { class: "num " + cls }, sign),
       el("div", { class: "step-body" },
-        el("div", { class: "step-line" }, el("b", {}, `交叉验证（没有精确解）：${cc.passed ? "通过" : "没通过"}`)),
+        el("div", { class: "step-line" }, el("b", {}, `验证（题目条件${r.error_kind === "exact" ? "、精确解" : "、交叉验证"}）：${word}`)),
         el("div", { class: "step-note" }, cc.checks.length ? cc.checks.map(c => c.text).join("；") : cc.text))));
   }
   for (const o of r.learned) {

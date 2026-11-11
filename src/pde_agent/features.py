@@ -33,7 +33,7 @@ import sympy as sp
 
 from .problem import PDEProblem
 from .solvers.base import SolverSpec
-from .verify import RESOLUTION_LIMIT, interpolation_mismatch
+from .verify import RESOLUTION_LIMIT, SHOCK_KINDS, TRANSPORT_KINDS, interpolation_mismatch
 
 # a method of order p is assumed to make an error of FLOOR_RESOLUTION^p on the floor grid
 # (as if the floor were 10 intervals of a unit problem); finer grids gain (n_floor/n)^p
@@ -149,7 +149,16 @@ def extract(problem: PDEProblem, floor: int) -> ProblemFeatures:
 def predict(spec: SolverSpec, problem: PDEProblem, feats: ProblemFeatures, tol: float, max_n: int) -> Prediction:
     """The grid ``spec`` should need for ``tol`` and the work to run it there."""
     order, notes = max(spec.order, 0.5), []
-    if not feats.smooth and order > 1:
+    shocks = problem.dim > 0 and problem.kind in TRANSPORT_KINDS and (feats.jumps or problem.kind in SHOCK_KINDS)
+    if shocks and "nonoscillatory" not in spec.traits:
+        # a linear high-order scheme rings at a jump on every grid: new extrema fail the solve whatever the error
+        notes.append("解有间断，这个格式在间断附近会振荡，不适用")
+        return Prediction(spec.name, max_n, max_n, math.inf, order, notes)
+    if shocks and problem.kind not in SHOCK_KINDS:
+        # a contact discontinuity is smeared over ~ (n t)^(1/(p+1)) cells: L1 order p/(p+1)
+        order = order / (order + 1)
+        notes.append(f"间断不会自己变陡，L1 收敛阶约 {order:.2g}")
+    elif not feats.smooth and order > 1:
         order, notes = 1.0, notes + ["数据不光滑，按一阶估计"]
     if "long" in feats.tags and "dissipative" in spec.traits:
         order, notes = 0.5, notes + ["长时间传播，耗散会累积，按半阶估计"]

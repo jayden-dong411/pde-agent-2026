@@ -81,6 +81,14 @@ BUILTIN_EQUATIONS = (
         defaults={"c": 1.0},
         description="Wave equation (hyperbolic, second order)",
     ),
+    Equation(
+        kind="burgers_inviscid",
+        form="u_t + u*u_x = f",
+        time_order=1,
+        operator=lambda u, x, y, t, c: sp.diff(u, t) + u * sp.diff(u, x),
+        defaults={},
+        description="Inviscid Burgers equation u_t + (u^2/2)_x = f (nonlinear conservation law; smooth data steepen into shocks)",
+    ),
 )
 
 

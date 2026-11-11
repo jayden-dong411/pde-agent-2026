@@ -22,7 +22,7 @@ import numpy as np
 
 from . import __version__
 from .agent import OUTCOMES, PDEAgent, SolveReport
-from .curriculum import basic_curriculum, frontier_lessons, ode_curriculum
+from .curriculum import basic_curriculum, frontier_lessons, ode_curriculum, pde_stages
 from .llm import PROVIDERS, LLMError
 from .ode import ODEProblem
 from .problem import PDEProblem
@@ -381,7 +381,7 @@ class AppState:
             "examples": [
                 {"name": lesson.name, "title": lesson.title, "level": lesson.level, "tol": lesson.tol,
                  "problem": lesson.problem.to_dict()}
-                for lesson in basic_curriculum() + frontier_lessons() + ode_curriculum()
+                for lesson in basic_curriculum() + pde_stages() + frontier_lessons() + ode_curriculum()
             ],
         }
 

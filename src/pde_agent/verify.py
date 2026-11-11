@@ -12,17 +12,75 @@ import math
 from dataclasses import dataclass, field
 
 import numpy as np
+import sympy as sp
 from scipy.interpolate import RectBivariateSpline, make_interp_spline
 
 from .problem import Field, PDEProblem
 from .solvers.base import SolveResult, SolverSpec, evaluate, mesh
 
 
-def relative_error(u: np.ndarray, reference: np.ndarray) -> float:
-    """Max-norm error relative to max|reference| (absolute if that is ~0)."""
-    diff = float(np.max(np.abs(np.asarray(u) - np.asarray(reference))))
-    scale = float(np.max(np.abs(reference)))
+# Hyperbolic problems whose solution jumps (or can jump: a nonlinear flux steepens smooth data into shocks).
+# There the max-norm error is O(1) whenever a shock sits one cell off, however fine the grid,
+# so the error is measured in L1, and a method that makes new extrema fails whatever its error.
+SHOCK_KINDS = {"burgers_inviscid"}
+TRANSPORT_KINDS = {"advection", "burgers_inviscid"}
+_JUMP_FUNCS = {"sign", "Heaviside", "floor", "ceiling"}
+OSCILLATION_LIMIT = 0.05  # new extrema beyond this fraction of the data's range count as oscillation
+# (Lax-Wendroff and central schemes overshoot a square wave by 11-30%; WENO5 on a coarse grid by up to 3%)
+
+
+def error_norm(problem) -> str:
+    """``l1`` for transport problems with jumps or shocks, else ``max``."""
+    if getattr(problem, "dim", 0) == 0 or problem.kind not in TRANSPORT_KINDS:
+        return "max"
+    if problem.kind in SHOCK_KINDS:
+        return "l1"
+    for name in ("initial", "exact", "boundary_value"):
+        expr = problem.expr(name)
+        if expr is not None and any(node.func.__name__ in _JUMP_FUNCS for node in sp.preorder_traversal(expr)):
+            return "l1"
+    return "max"
+
+
+def relative_error(u: np.ndarray, reference: np.ndarray, norm: str = "max") -> float:
+    """Error relative to the size of ``reference`` (absolute if that is ~0).
+
+    ``max``: max-norm. ``l1``: mean absolute difference over mean |reference|
+    (on an equal-spaced grid the same as the L1 norm ratio).
+    """
+    diff_abs = np.abs(np.asarray(u, dtype=float) - np.asarray(reference, dtype=float))
+    ref_abs = np.abs(np.asarray(reference, dtype=float))
+    if norm == "l1":
+        diff, scale = float(np.mean(diff_abs)), float(np.mean(ref_abs))
+    else:
+        diff, scale = float(np.max(diff_abs)), float(np.max(ref_abs))
     return diff / scale if scale > 1e-12 else diff
+
+
+def new_extrema(problem, result: SolveResult) -> float | None:
+    """How far ``result`` overshoots the range of the initial and boundary data, as a fraction of that range.
+
+    Only meaningful without a source (then the exact solution keeps to that range):
+    None when the problem has a source or its data are not finite.
+    """
+    source = problem.expr("source")
+    if source is not None and source != 0:
+        return None
+    view = problem.for_solver()
+    with np.errstate(all="ignore"):
+        x = result.grid[0]
+        data = [np.asarray(view.fn("initial")(x, 0.0, 0.0), dtype=float) * np.ones_like(x)]
+        if problem.boundary == "dirichlet" and view.expr("boundary_value") is not None:
+            ends = x[[0, -1]]
+            data += [np.asarray(view.fn("boundary_value")(ends, 0.0, t), dtype=float) * np.ones(2)
+                     for t in (0.0, problem.t_final)]
+    values = np.concatenate(data)
+    if not np.all(np.isfinite(values)):
+        return None
+    low, high = float(values.min()), float(values.max())
+    span = max(high - low, 1e-12)
+    u = np.asarray(result.u, dtype=float)
+    return max(0.0, float(u.max()) - high, low - float(u.min())) / span
 
 
 def exact_values(problem: PDEProblem, result: SolveResult) -> np.ndarray:
@@ -34,7 +92,7 @@ def exact_values(problem: PDEProblem, result: SolveResult) -> np.ndarray:
 def exact_error(problem: PDEProblem, result: SolveResult) -> float | None:
     if not problem.has_exact():
         return None
-    return relative_error(result.u, exact_values(problem, result))
+    return relative_error(result.u, exact_values(problem, result), error_norm(problem))
 
 
 def restrict(fine: SolveResult, n: int) -> np.ndarray:
@@ -47,10 +105,10 @@ def restrict(fine: SolveResult, n: int) -> np.ndarray:
     return fine.u[(slice(None, None, ratio),) * fine.u.ndim]
 
 
-def richardson_error(coarse: SolveResult, fine: SolveResult, order: float) -> float:
+def richardson_error(coarse: SolveResult, fine: SolveResult, order: float, norm: str = "max") -> float:
     """Estimated relative error of ``fine`` from its difference to ``coarse``."""
     ratio = fine.n / coarse.n
-    diff = relative_error(coarse.u, restrict(fine, coarse.n))
+    diff = relative_error(coarse.u, restrict(fine, coarse.n), norm)
     return diff / (ratio ** max(order, 0.5) - 1.0)
 
 
@@ -84,7 +142,7 @@ def convergence_study(spec: SolverSpec, problem: PDEProblem, ns: list[int], opti
         errors = [exact_error(problem, r) for r in results]
         kind = "exact"
     else:
-        errors = [relative_error(c.u, restrict(f, c.n)) for c, f in zip(results, results[1:])]
+        errors = [relative_error(c.u, restrict(f, c.n), error_norm(problem)) for c, f in zip(results, results[1:])]
         kind = "difference"
     study = ConvergenceStudy(method=spec.name, ns=list(ns), errors=errors, kind=kind)
     sizes = ns if kind == "exact" else ns[1:]

@@ -10,7 +10,10 @@ from pathlib import Path
 
 from . import __version__
 from .agent import PDEAgent, default_home
-from .curriculum import basic_curriculum, frontier_lessons, ode_curriculum, ode_exam, run_curriculum
+from .curriculum import (
+    basic_curriculum, best_work, frontier_lessons, ode_curriculum, ode_exam, pde_exam, pde_stages, regret,
+    run_curriculum,
+)
 from .llm import PROVIDERS, LLMError, default_provider
 from .ode import problem_from_dict
 from .settings import Settings
@@ -41,7 +44,9 @@ def _fmt(value, spec=".2e") -> str:
 
 def cmd_curriculum(args) -> int:
     agent = _agent(args)
-    if args.exam:
+    if args.pde:
+        lessons = pde_exam() if args.exam else pde_stages()
+    elif args.exam:
         lessons = ode_exam()
     elif args.ode:
         lessons = ode_curriculum()
@@ -51,6 +56,7 @@ def cmd_curriculum(args) -> int:
         lessons = [lesson for lesson in lessons if lesson.level <= args.level]
     print(f"{'轮':>2} {'课程':<24} {'结果':<4} {'方法':<26} {'n':>5} {'误差':>9} {'求解次数':>6} {'工作量':>10}")
     totals: dict[int, list[float]] = {}
+    regrets: list[float] = []
     for round_, lesson, report in run_curriculum(agent, lessons, args.rounds, learn=agent.brain is not None):
         ok = "成功" if report.success else "失败"
         print(f"{round_:>2} {lesson.name:<24} {ok:<4} {report.method or '-':<26} {report.n or '-':>5} "
@@ -59,6 +65,12 @@ def cmd_curriculum(args) -> int:
             print(f"   └ {report.message}")
         elif lesson.problem.dim == 0 and report.features is not None:
             print(f"   └ {report.features.describe()}")
+        if args.regret and round_ == args.rounds:
+            best = best_work(agent.registry, report.problem, lesson.tol)
+            r = regret(report.work, best) if report.success else None
+            if r is not None:
+                regrets.append(r)
+                print(f"   └ 后悔度 {r:.2f}（最省的是 {best[0]}，一次 {best[1]:.3g}）")
         for outcome in report.learned:
             status = f"学会了 {outcome.solver}" if outcome.success else f"学习失败：{outcome.message}"
             print(f"   └ {status}（{outcome.rounds} 轮）")
@@ -68,6 +80,10 @@ def cmd_curriculum(args) -> int:
         t[2] += report.work
     for round_, (ok, runs, work) in totals.items():
         print(f"第 {round_} 轮：成功 {ok}/{len(lessons)}，共求解 {runs} 次，工作量 {work:.3g}")
+    if regrets:
+        mean = math.exp(sum(math.log(r) for r in regrets) / len(regrets))
+        print(f"后悔度（最后一轮，{len(regrets)} 道有精确解的题）：几何平均 {mean:.2f}，最大 {max(regrets):.2f}"
+              "；过关标准：几何平均 ≤ 1.5 且没有一道 > 4")
     return 0
 
 
@@ -355,7 +371,9 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--level", type=int, help="只做到这一级")
     p.add_argument("--frontier", action="store_true", help="包含需要学习新方法的课程")
     p.add_argument("--ode", action="store_true", help="常微分方程课程：第 0 阶段（不刚性）和第 1 阶段（刚性）")
-    p.add_argument("--exam", action="store_true", help="常微分方程第 0、1 阶段的期末考（没练过的参数）")
+    p.add_argument("--exam", action="store_true", help="期末考（没练过的参数）：默认考常微分方程第 0、1 阶段，加 --pde 考第 2–4 阶段")
+    p.add_argument("--pde", action="store_true", help="偏微分方程课程第 2–4 阶段：抛物型、光滑双曲、有间断和激波的双曲方程")
+    p.add_argument("--regret", action="store_true", help="最后一轮算后悔度：agent 的工作量 ÷ 最省方法在合适网格上跑一次的工作量")
     p.add_argument("--learn", "--claude", action="store_true", help="允许请大模型学习新方法")
     p.set_defaults(func=cmd_curriculum)
 

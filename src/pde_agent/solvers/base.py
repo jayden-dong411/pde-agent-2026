@@ -57,7 +57,10 @@ class SolverSpec:
     properties, so far ``adaptive`` (``n`` sets a tolerance, not a grid).
     ``stability`` is the step limit of an explicit ODE method: |lambda| dt
     may not exceed it. ``accepts`` narrows which problems of its class the
-    method can take (Verlet only takes separable systems).
+    method can take (Verlet only takes separable systems). ``runner``, when
+    set, does the run instead of ``solve``: a learned skill runs in its own
+    limited process (``sandbox.run_skill``), which gets the whole problem and
+    hands the skill ``for_solver()`` there.
     """
 
     name: str
@@ -73,6 +76,7 @@ class SolverSpec:
     traits: tuple[str, ...] = ()
     stability: float | None = None
     accepts: Callable[[PDEProblem], bool] | None = None
+    runner: Callable[[PDEProblem, int, dict], SolveResult] | None = None
 
     def supports(self, problem: PDEProblem) -> bool:
         return (
@@ -84,8 +88,11 @@ class SolverSpec:
 
     def run(self, problem: PDEProblem, n: int, options: dict | None = None) -> SolveResult:
         start = time.perf_counter()
-        # the one place where solvers lose sight of the exact solution
-        result = self.solve(problem.for_solver(), int(n), dict(options or {}))
+        if self.runner is not None:  # in another process, which takes the same step there
+            result = self.runner(problem, int(n), dict(options or {}))
+        else:
+            # the one place where solvers lose sight of the exact solution
+            result = self.solve(problem.for_solver(), int(n), dict(options or {}))
         result.runtime = time.perf_counter() - start
         result.method = self.name
         # an ODE solver returns the state vector at the final time

@@ -22,15 +22,20 @@ import numpy as np
 
 from . import __version__
 from .agent import OUTCOMES, PDEAgent, SolveReport
+from .jobs import Busy, Job, JobManager
 from .curriculum import basic_curriculum, frontier_lessons, ode_curriculum, pde_stages
 from .llm import PROVIDERS, LLMError
 from .ode import ODEProblem
 from .problem import PDEProblem
 from .cloud import CloudError, HubClient, SyncState, sync
 from .settings import DEFAULT_MODELS, MODELS, Settings, key_hint
+from .memory import ExperienceStore
+from .solvers import builtin_registry
+from .equations import builtin_equations
 from .verify import exact_values
 
 PAGE = Path(__file__).parent / "templates" / "app.html"
+JOB_TIMEOUT = 600.0  # seconds a web solve may take before its process is stopped
 MAX_POINTS = 129  # per axis in the plotted solution
 ODE_POINTS = 241  # times in a plotted ODE trajectory
 ODE_CURVES = 8  # components drawn at most
@@ -74,6 +79,8 @@ def report_json(report: SolveReport) -> dict:
         "solver_runs": report.solver_runs,
         "work": _num(report.work),
         "runtime": round(report.runtime, 3),
+        "costs": report.costs(),
+        "cost_text": report.cost_text(),
         "message": report.message,
         "choice": report.choice(),
         "crosscheck": ({**report.crosscheck.to_dict(), "text": report.crosscheck.describe(),
@@ -239,10 +246,13 @@ def solve_request(text: str) -> tuple[str, float | None] | None:
     return (problem, tol) if problem else None
 
 
-def chat_solve_text(problem: str, report: SolveReport) -> str:
-    """What the conversation keeps about a solve, so later turns can refer to it."""
-    verdict = report.status_text
-    return (f"**交给求解器的题目**：{problem}\n\n**结果（{verdict}，要求 {report.tol:g}）**：{report.summary()}\n\n"
+def chat_solve_text(problem: str, report: SolveReport | dict) -> str:
+    """What the conversation keeps about a solve, so later turns can refer to it (a report or its JSON)."""
+    if isinstance(report, dict):
+        verdict, tol, summary = report["status_text"], report["tol"], report["summary"]
+    else:
+        verdict, tol, summary = report.status_text, report.tol, report.summary()
+    return (f"**交给求解器的题目**：{problem}\n\n**结果（{verdict}，要求 {tol:g}）**：{summary}\n\n"
             "图和求解过程在上面的“求解”面板。")
 
 
@@ -285,14 +295,23 @@ def preview_json(problem: PDEProblem | ODEProblem) -> dict:
 
 
 class AppState:
-    """The agent behind the page; solves run one at a time."""
+    """The agent behind the page; solves run one at a time, as jobs (``jobs.py``).
+
+    ``isolate``: run each solve in a child process that a timeout or cancel can kill (the default unless a
+    custom ``make_brain`` is given: a brain made here, like the tests' scripted models, cannot move to another
+    process, so those solves run in a thread). ``job_timeout``: seconds before a solve is stopped.
+    """
 
     def __init__(self, agent: PDEAgent, provider: str, model: str | None = None,
-                 make_brain: Callable[..., Any] | None = None):
+                 make_brain: Callable[..., Any] | None = None, isolate: bool | None = None,
+                 job_timeout: float = JOB_TIMEOUT):
         self.agent = agent
         self.settings = Settings(agent.home)
         self._start = (provider, model)  # from the command line, until settings are saved on the page
         self._make_brain = make_brain
+        self.isolate = make_brain is None if isolate is None else bool(isolate)
+        self.job_timeout = float(job_timeout)
+        self.jobs = JobManager(on_finish=self._after_job)
         self.lock = threading.Lock()
         self._sync_lock = threading.Lock()
         self.cloud_error: str | None = None
@@ -395,12 +414,103 @@ class AppState:
             self.agent.equations.complete(problem)  # a misspelled coefficient is the form's fault, not the solver's
         except ValueError as exc:
             raise RequestError(f"题目有误：{exc}") from exc
-        with self.lock:
-            if learn:
+        if learn:
+            with self.lock:
                 self._brain_or_error()
+        job = self._start_solve(problem, tol, learn, payload)
+        return self._answer(job, payload)
+
+    # jobs ------------------------------------------------------------------------
+    def _start_solve(self, problem, tol: float, learn: bool, payload: dict, meta: dict | None = None) -> Job:
+        timeout = self._timeout(payload)
+        try:
+            if not self.isolate:
+                return self.jobs.start_inline("solve", lambda progress: self._solve_here(problem, tol, learn, progress),
+                                              timeout, meta)
+            agent = self.agent
+            spec = {"home": str(agent.home), "problem": problem.to_dict(), "tol": tol, "learn": learn,
+                    "agent": {"explore": agent.explore, "remember": agent.memory.update,
+                              "time_budget": agent.time_budget, "max_runs_per_method": agent.max_runs_per_method,
+                              "validation_timeout": agent.validation_timeout}}
+            if learn:
+                # the job's own process makes the brain; the key goes through the pipe, never an environment
+                spec["brain"] = {"provider": self.provider, "model": self.model, "api_key": self.api_key(),
+                                 "log_path": str(Path(agent.home) / "deepseek_requests.jsonl")}
+            return self.jobs.start_process("solve", spec, timeout, meta)
+        except Busy as exc:
+            raise RequestError("正在求解另一道题：等它完成，或者先点“取消”", HTTPStatus.CONFLICT) from exc
+
+    def _solve_here(self, problem, tol: float, learn: bool, progress) -> dict:
+        self.agent.progress = progress
+        try:
             report = self.agent.solve(problem, tol, learn=learn)
-        self.sync_in_background()
-        return report_json(report)
+        finally:
+            self.agent.progress = None
+        return {"report": report_json(report), "learned": [o.solver for o in report.learned if o.success]}
+
+    def _after_job(self, job: Job) -> None:
+        """Pick up what the job's process wrote: its experience, and a skill it learned."""
+        agent = self.agent
+        if self.isolate:
+            with self.lock:
+                memory = agent.memory
+                agent.memory = ExperienceStore(memory.path, memory.shared_path, update=memory.update)
+                if job.result and job.result.get("learned"):
+                    registry, equations = builtin_registry(), builtin_equations()
+                    agent.skill_errors = agent.skills.load_into(registry, equations,
+                                                                timeout=agent.validation_timeout)
+                    agent.registry, agent.equations = registry, equations
+        if job.result and job.meta.get("chat_problem"):
+            job.result["chat_text"] = chat_solve_text(job.meta["chat_problem"], job.result["report"])
+        if job.state == "done":
+            self.sync_in_background()
+
+    def _answer(self, job: Job, payload: dict) -> dict:
+        """The job itself for the page (``async``), else wait for it and answer like before (the report)."""
+        if payload.get("async"):
+            return {"job": job.to_dict()}
+        job.done_event.wait()
+        if job.state == "done":
+            return job.result["report"]
+        exc = job.meta.get("exception")
+        if isinstance(exc, RequestError):
+            raise exc
+        if isinstance(exc, LLMError):
+            raise RequestError(self._llm_message(exc), HTTPStatus.BAD_GATEWAY)
+        if exc is not None:  # an in-process job: its own exception, as a direct call would raise it
+            raise exc
+        status = {"timeout": HTTPStatus.GATEWAY_TIMEOUT, "cancelled": HTTPStatus.CONFLICT}.get(
+            job.state, HTTPStatus.INTERNAL_SERVER_ERROR)
+        raise RequestError(job.error or "求解失败", status)
+
+    def job(self, job_id: str) -> dict:
+        job = self.jobs.get(job_id)
+        if job is None:
+            raise RequestError("没有这个求解任务（可能已经过期）", HTTPStatus.NOT_FOUND)
+        return job.to_dict()
+
+    def current_job(self) -> dict:
+        job = self.jobs.current()
+        return {"job": job.to_dict() if job else None}
+
+    def cancel_job(self, job_id: str) -> dict:
+        job = self.jobs.cancel(job_id)
+        if job is None:
+            raise RequestError("没有这个求解任务（可能已经过期）", HTTPStatus.NOT_FOUND)
+        job.done_event.wait(10)
+        return job.to_dict()
+
+    def _timeout(self, payload: dict) -> float:
+        value = payload.get("timeout")
+        if value is None:
+            return self.job_timeout
+        try:
+            value = float(value)
+        except (TypeError, ValueError) as exc:
+            raise RequestError("时间上限必须是数字（秒）") from exc
+        if not (math.isfinite(value) and 1 <= value <= 86400):
+            raise RequestError("时间上限必须在 1 到 86400 秒之间")
+        return value
 
     def preview(self, payload: dict) -> dict:
         return preview_json(problem_from_form(payload))
@@ -437,16 +547,18 @@ class AppState:
         request = solve_request(text)
         if request is None:
             return {"answer": text, "model": model}
-        problem, tol = request
+        text, tol = request
         tol = tol if tol is not None else self._tol(payload)
-        with self.lock:
-            try:
-                report = self.agent.ask(problem, tol)
-            except LLMError as exc:
-                return {"answer": f"**交给求解器的题目**：{problem}\n\n没能把它变成求解器能用的题目：{exc}。"
-                                  "可以把条件说得更完整一点再试。", "model": model, "solve": None}
-        self.sync_in_background()
-        return {"answer": chat_solve_text(problem, report), "model": model, "solve": report_json(report)}
+        try:
+            parsed = brain.parse_problem(text, self.agent.equations)
+        except LLMError as exc:
+            return {"answer": f"**交给求解器的题目**：{text}\n\n没能把它变成求解器能用的题目：{exc}。"
+                              "可以把条件说得更完整一点再试。", "model": model, "solve": None}
+        job = self._start_solve(parsed.problem, tol, True, payload, meta={"chat_problem": text})
+        if payload.get("async"):
+            return {"answer": f"**交给求解器的题目**：{text}\n\n求解中…", "model": model, "job": job.to_dict()}
+        report = self._answer(job, {})
+        return {"answer": job.result["chat_text"], "model": model, "solve": report}
 
     def ask(self, payload: dict) -> dict:
         text = str(payload.get("text") or "").strip()
@@ -454,13 +566,13 @@ class AppState:
             raise RequestError("请先描述题目")
         tol = self._tol(payload)
         with self.lock:
-            self._brain_or_error()
-            try:
-                report = self.agent.ask(text, tol)
-            except LLMError as exc:
-                raise RequestError(self._llm_message(exc), HTTPStatus.BAD_GATEWAY) from exc
-        self.sync_in_background()
-        return report_json(report)
+            brain = self._brain_or_error()
+        try:
+            parsed = brain.parse_problem(text, self.agent.equations)  # a model call: no solver runs here
+        except LLMError as exc:
+            raise RequestError(self._llm_message(exc), HTTPStatus.BAD_GATEWAY) from exc
+        job = self._start_solve(parsed.problem, tol, True, payload)
+        return self._answer(job, payload)
 
     def stats(self) -> dict:
         with self.lock:
@@ -562,6 +674,10 @@ class AppState:
         return tol
 
 
+_JOB = re.compile(r"/api/jobs/([0-9a-f]{12})")
+_CANCEL = re.compile(r"/api/jobs/([0-9a-f]{12})/cancel")
+
+
 def make_handler(state: AppState):
     page = PAGE.read_bytes()
 
@@ -604,6 +720,13 @@ def make_handler(state: AppState):
                 self._json(HTTPStatus.OK, state.get_settings())
             elif self.path == "/api/cloud":
                 self._json(HTTPStatus.OK, state.get_cloud())
+            elif self.path == "/api/jobs/current":
+                self._json(HTTPStatus.OK, state.current_job())
+            elif _JOB.fullmatch(self.path):
+                try:
+                    self._json(HTTPStatus.OK, state.job(_JOB.fullmatch(self.path).group(1)))
+                except RequestError as exc:
+                    self._json(exc.status, {"error": str(exc)})
             else:
                 self._json(HTTPStatus.NOT_FOUND, {"error": "not found"})
 
@@ -614,6 +737,9 @@ def make_handler(state: AppState):
                       "/api/preview": state.preview, "/api/chat": state.chat,
                       "/api/cloud": state.save_cloud, "/api/cloud/sync": state.sync_cloud}
             route = routes.get(self.path)
+            cancel = _CANCEL.fullmatch(self.path)
+            if cancel:
+                route = lambda payload, job_id=cancel.group(1): state.cancel_job(job_id)  # noqa: E731
             if route is None:
                 self._json(HTTPStatus.NOT_FOUND, {"error": "not found"})
                 return

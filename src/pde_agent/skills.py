@@ -15,33 +15,42 @@ systems with 32, 64 and 128 steps: two standard ones with exact solutions
 ``[0, 2]``, against a tightly toleranced Radau run, so the test keeps the
 task's stiffness and nonlinearity.
 
-The static check and the separate process limit accidents; they are not a
-security sandbox. Learned code runs on this machine, so review skills you
+Learned code never runs in the agent's own process (``sandbox.py``): the exam
+and every later solve run in a child with a minimal environment (no API keys),
+CPU, memory and file-size limits and a wall-clock timeout. The agent itself
+only uses what the exam reported about a skill (its ``SOLVER`` metadata, and
+for a new equation the operator read from its checked text), recorded in the
+manifest together with a hash of the code: a file whose code changed since is
+examined again before it is used.
+
+The static check and the limited child process limit accidents; they are not
+a security sandbox. Learned code runs on this machine, so review skills you
 keep and run the agent where that is acceptable.
 """
 
 from __future__ import annotations
 
 import ast
+import hashlib
 import importlib.util
 import json
 import math
 import os
 import re
-import subprocess
 import sys
 import tempfile
 import traceback
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass, field, replace
 from datetime import datetime, timezone
 from pathlib import Path
 from types import ModuleType
 
 import numpy as np
 
-from .equations import Equation, EquationBook, builtin_equations, check_operator, manufactured_problem
+from . import sandbox
+from .equations import Equation, EquationBook, builtin_equations, check_operator, manufactured_problem, operator_from_text
 from .problem import BOUNDARY_KINDS, PDEProblem, parse_expr
-from .solvers.base import SolverRegistry, SolverSpec
+from .solvers.base import STEP_OVERHEAD, SolverDiverged, SolverRegistry, SolverSpec
 from .verify import convergence_study
 
 TEMPLATE = Path(__file__).parent / "templates" / "reaction_diffusion_skill.py"
@@ -61,7 +70,13 @@ FORBIDDEN_ATTRIBUTES = {
 }
 
 STUDY_GRIDS = {0: [32, 64, 128], 1: [16, 32, 64], 2: [8, 16, 32], 3: [4, 8, 16]}  # dim 0: ODE time steps
-EXAM_VERSION = 2  # raise when the exam gets stricter: installed skills with an older version are examined again
+# raise when the exam gets stricter: installed skills with an older version are examined again
+# 3: the exam runs in the limited child and reports the metadata the agent uses (v2.2.0)
+EXAM_VERSION = 3
+# what a SOLVER may declare for the method selector (see SolverSpec): traits it has, the step limit of an
+# explicit ODE method, a cost model and which problems of its class it accepts
+SKILL_TRAITS = {"adaptive", "dissipative", "nonoscillatory", "neural"}
+COST_STEPS = {"none", "fixed", "h", "h2"}  # time steps ~ t / (cfl * h**p), or n steps (ODE), or none (steady)
 MAX_FINAL_ERROR = 5e-2
 _SOLVER_NAME = re.compile(r"[a-z][a-z0-9_]*\.[a-z][a-z0-9_]*")
 
@@ -158,13 +173,15 @@ class ValidationReport:
     kind: str | None = None
     order: float | None = None
     cases: list[dict] = field(default_factory=list)
+    meta: dict | None = None  # what the agent may use about the skill: {"solver": ..., "equation": ...}
 
     def to_dict(self) -> dict:
         return asdict(self)
 
     @classmethod
     def from_dict(cls, data: dict) -> ValidationReport:
-        return cls(**data)
+        known = {"ok", "message", "solver", "kind", "order", "cases", "meta"}
+        return cls(**{k: v for k, v in data.items() if k in known})
 
     def feedback(self) -> str:
         """Plain-text account of the exam, for the model to repair its code."""
@@ -266,10 +283,21 @@ def equation_from_module(module: ModuleType) -> Equation | None:
     )
 
 
-def solver_from_module(module: ModuleType) -> SolverSpec:
-    data = getattr(module, "SOLVER", None)
-    solve = getattr(module, "solve", None)
-    if not isinstance(data, dict) or not callable(solve):
+def solver_meta(data) -> dict:
+    """The checked, JSON-plain form of a ``SOLVER`` dict; raises ``ValueError`` for anything malformed.
+
+    Besides the required name, kind, dims, boundaries and order a skill may declare, for the method selector:
+
+    * ``traits``: any of ``adaptive`` (n sets a tolerance), ``dissipative``, ``nonoscillatory``, ``neural``;
+    * ``stability``: for an explicit ODE method, the largest stable |lambda| dt;
+    * ``cost``: ``{"steps": "h" | "h2" | "fixed" | "none", "cfl": c, "per_node": w}``, the work model: time
+      steps t / (cfl h) or t / (cfl h^2) (PDE), n steps (ODE), none (steady); w units of work per node and step;
+    * ``accepts``: ``{"t_final_max": T, "coefficients": {"D": [lo, hi]}}``, the problems it may be given.
+
+    Without ``cost`` a conservative explicit model (``steps`` "h", cfl 1) is used, so an untried skill is not
+    ranked as free.
+    """
+    if not isinstance(data, dict):
         raise ValueError("module must define SOLVER (a dict) and solve(problem, n, options)")
     name = str(data.get("name", ""))
     if not _SOLVER_NAME.fullmatch(name):
@@ -277,10 +305,10 @@ def solver_from_module(module: ModuleType) -> SolverSpec:
     kind = str(data.get("kind", ""))
     if name.split(".")[0] != kind:
         raise ValueError("SOLVER name must start with its kind")
-    dims = tuple(int(d) for d in data.get("dims", ()))
-    boundaries = tuple(str(b) for b in data.get("boundaries", ()))
+    dims = [int(d) for d in data.get("dims", ())]
+    boundaries = [str(b) for b in data.get("boundaries", ())]
     if kind == "ode":  # y' = f(t, y): no space, an initial value problem
-        if dims != (0,) or boundaries != ("ivp",):
+        if dims != [0] or boundaries != ["ivp"]:
             raise ValueError('an ODE SOLVER has "dims": [0] and "boundaries": ["ivp"]')
     else:
         if not dims or any(d not in (1, 2, 3) for d in dims):
@@ -290,10 +318,138 @@ def solver_from_module(module: ModuleType) -> SolverSpec:
     order = float(data.get("order", 0))
     if not (math.isfinite(order) and order > 0):
         raise ValueError("SOLVER order must be positive")
+    traits = sorted({str(t) for t in data.get("traits", ())})
+    unknown = set(traits) - SKILL_TRAITS
+    if unknown:
+        raise ValueError(f"unknown SOLVER traits {sorted(unknown)}; allowed: {sorted(SKILL_TRAITS)}")
+    stability = data.get("stability")
+    if stability is not None:
+        stability = float(stability)
+        if not (math.isfinite(stability) and stability > 0) or kind != "ode":
+            raise ValueError("SOLVER stability must be a positive number, and only an ODE method has one")
+    cost = dict(data.get("cost") or {})
+    steps = str(cost.get("steps", "fixed" if kind == "ode" else "h"))
+    cfl, per_node = float(cost.get("cfl", 1.0)), float(cost.get("per_node", 1.0))
+    if steps not in COST_STEPS or not (math.isfinite(cfl) and cfl > 0) or not (math.isfinite(per_node) and per_node > 0):
+        raise ValueError(f'SOLVER cost must be {{"steps": one of {sorted(COST_STEPS)}, "cfl" > 0, "per_node" > 0}}')
+    accepts = dict(data.get("accepts") or {})
+    t_max = accepts.get("t_final_max")
+    if t_max is not None:
+        t_max = float(t_max)
+        if not (math.isfinite(t_max) and t_max > 0):
+            raise ValueError("SOLVER accepts.t_final_max must be positive")
+    ranges = {}
+    for coefficient, bounds in dict(accepts.get("coefficients") or {}).items():
+        lo, hi = (float(b) for b in bounds)
+        if not (lo <= hi):
+            raise ValueError(f"SOLVER accepts.coefficients.{coefficient} must be [low, high]")
+        ranges[str(coefficient)] = [lo, hi]
+    return {
+        "name": name, "kind": kind, "dims": dims, "boundaries": boundaries, "order": order,
+        "description": str(data.get("description", ""))[:500], "traits": traits, "stability": stability,
+        "cost": {"steps": steps, "cfl": cfl, "per_node": per_node},
+        "accepts": {"t_final_max": t_max, "coefficients": ranges},
+    }
+
+
+def equation_meta(equation: Equation | None) -> dict | None:
+    if equation is None:
+        return None
+    return {"kind": equation.kind, "form": equation.form, "time_order": equation.time_order,
+            "defaults": dict(equation.defaults), "description": equation.description}
+
+
+def solver_from_module(module: ModuleType) -> SolverSpec:
+    """The skill as a SolverSpec that runs in this process (only inside the exam's child process)."""
+    meta = solver_meta(getattr(module, "SOLVER", None))
+    solve = getattr(module, "solve", None)
+    if not callable(solve):
+        raise ValueError("module must define SOLVER (a dict) and solve(problem, n, options)")
+    return replace(spec_from_meta(meta), solve=solve)
+
+
+def _cost_model(meta: dict):
+    model = meta["cost"]
+    steps, cfl, per_node = model["steps"], model["cfl"], model["per_node"]
+
+    def cost(problem, n: int) -> float:
+        if problem.dim == 0:  # an ODE: n steps of the whole state
+            return float(n * per_node * (problem.size + STEP_OVERHEAD))
+        nodes = (n + 1) ** problem.dim
+        if steps == "none" or problem.t_final is None:
+            return float(per_node * nodes)
+        if steps == "fixed":
+            count = n
+        else:
+            h = min(b - a for a, b in problem.domain) / n
+            count = math.ceil(problem.t_final / (cfl * (h if steps == "h" else h * h)) - 1e-9)
+        return float(max(1, count) * per_node * (nodes + STEP_OVERHEAD))
+
+    return cost
+
+
+def _accepts(meta: dict):
+    accepts = meta["accepts"]
+    t_max, ranges = accepts.get("t_final_max"), accepts.get("coefficients") or {}
+    if t_max is None and not ranges:
+        return None
+
+    def check(problem) -> bool:
+        if t_max is not None and problem.t_final is not None and problem.t_final > t_max * (1 + 1e-12):
+            return False
+        for name, (lo, hi) in ranges.items():
+            value = problem.coefficients.get(name)
+            if value is not None and not (lo <= value <= hi):
+                return False
+        return True
+
+    return check
+
+
+def _not_here(problem, n, options):
+    raise RuntimeError("a learned skill runs only in its own process (sandbox.run_skill)")
+
+
+def spec_from_meta(meta: dict, path: Path | None = None, examined: tuple[int, str] | None = None,
+                   timeout: float = 300.0) -> SolverSpec:
+    """A SolverSpec from checked metadata. With ``path`` it runs the skill in a limited child process.
+
+    ``examined`` (dim, boundary): the only case the exam covered; the method is offered for that case only.
+    """
+    meta = solver_meta(meta)
+    dims, boundaries = tuple(meta["dims"]), tuple(meta["boundaries"])
+    if examined is not None:
+        dim, boundary = examined
+        if dim in dims and boundary in boundaries:
+            dims, boundaries = (dim,), (boundary,)
+    runner = None
+    if path is not None:
+        path = Path(path)
+
+        def runner(problem, n, options, path=path):
+            return sandbox.run_skill(path, problem, n, options, timeout, sandbox.Limits(cpu_seconds=timeout))
     return SolverSpec(
-        name=name, kind=kind, dims=dims, boundaries=boundaries, order=order, solve=solve,
-        description=str(data.get("description", "")), origin="learned",
+        name=meta["name"], kind=meta["kind"], dims=dims, boundaries=boundaries, order=meta["order"],
+        solve=_not_here, description=meta["description"], origin="learned", cost=_cost_model(meta),
+        traits=tuple(meta["traits"]), stability=meta["stability"], accepts=_accepts(meta), runner=runner,
     )
+
+
+def equation_from_meta(meta: dict, coefficient_names) -> Equation:
+    """A learned equation for this process: its operator is read from its form, the text the exam checked
+    against the skill's own operator, so the skill's Python never runs here."""
+    defaults = {str(k): float(v) for k, v in dict(meta.get("defaults") or {}).items()}
+    text = str(meta.get("form", ""))
+    reader = operator_from_text(text, set(defaults) | set(coefficient_names))
+    if reader.time_order != int(meta.get("time_order", -1)):
+        raise ValueError(f"equation form {text!r} has time order {reader.time_order}, not {meta.get('time_order')}")
+    return Equation(kind=str(meta["kind"]), form=text, time_order=int(meta["time_order"]),
+                    operator=lambda u, x, y, t, c, reader=reader: reader.apply(u, c), defaults=defaults,
+                    description=str(meta.get("description", ""))[:500], origin="learned")
+
+
+def code_hash(code: str) -> str:
+    return hashlib.sha256(code.encode("utf-8")).hexdigest()
 
 
 # --- the numerical exam -----------------------------------------------------------
@@ -319,7 +475,20 @@ def default_test_solutions(time_order: int, boundary: str, domain: list[tuple[fl
 
 
 def run_exam(module: ModuleType, task: SkillTask | None, test_solutions: list[str]) -> ValidationReport:
-    """Validate a loaded skill module in this process."""
+    """Validate a loaded skill module in this process; a passing report carries the skill's metadata."""
+    report = _run_exam(module, task, test_solutions)
+    if report.ok:
+        spec = solver_from_module(module)
+        if spec.kind == "ode":
+            examined = [0, "ivp"]
+        else:
+            examined = [task.dim, task.boundary] if task is not None else [spec.dims[0], spec.boundaries[0]]
+        report.meta = {"solver": solver_meta(module.SOLVER), "equation": equation_meta(equation_from_module(module)),
+                       "examined": examined}
+    return report
+
+
+def _run_exam(module: ModuleType, task: SkillTask | None, test_solutions: list[str]) -> ValidationReport:
     try:
         equation = equation_from_module(module)
         spec = solver_from_module(module)
@@ -505,28 +674,17 @@ def run_ode_exam(spec: SolverSpec, equation: Equation | None, task: SkillTask | 
 
 
 def validate_file(path: Path, task: SkillTask | None, test_solutions: list[str], timeout: float = 300.0) -> ValidationReport:
-    """Run the exam on a skill file in a separate Python process."""
-    payload = json.dumps({
-        "path": str(Path(path).resolve()),
-        "task": task.to_dict() if task else None,
-        "test_solutions": list(test_solutions),
-    })
-    env = dict(os.environ)
-    package_root = str(Path(__file__).resolve().parent.parent)
-    env["PYTHONPATH"] = os.pathsep.join(p for p in (package_root, env.get("PYTHONPATH", "")) if p)
-    with tempfile.TemporaryDirectory() as scratch:
-        try:
-            proc = subprocess.run(
-                [sys.executable, "-c", "from pde_agent.skills import _child_main; _child_main()"],
-                input=payload, capture_output=True, text=True, timeout=timeout, env=env, cwd=scratch,
-            )
-        except subprocess.TimeoutExpired:
-            return ValidationReport(ok=False, message=f"validation timed out after {timeout:.0f} s (too slow?)")
-    for line in reversed(proc.stdout.splitlines()):
-        if line.startswith(_REPORT_PREFIX):
-            return ValidationReport.from_dict(json.loads(line[len(_REPORT_PREFIX):]))
-    tail = (proc.stderr or proc.stdout).strip()[-1500:]
-    return ValidationReport(ok=False, message=f"validation process failed (exit {proc.returncode}): {tail}")
+    """Run the exam on a skill file in a separate, limited Python process (see ``sandbox.py``)."""
+    payload = {"path": str(Path(path).resolve()), "task": task.to_dict() if task else None,
+               "test_solutions": list(test_solutions)}
+    try:
+        answer = sandbox.call("pde_agent.skills:_child_main", payload, timeout, sandbox.Limits(cpu_seconds=timeout))
+    except sandbox.SkillRunError as exc:
+        return ValidationReport(ok=False, message=f"validation process failed: {exc}")
+    try:
+        return ValidationReport.from_dict(answer)
+    except TypeError as exc:
+        return ValidationReport(ok=False, message=f"validation process answered nonsense: {exc}")
 
 
 def validate_candidate(candidate: SkillCandidate, task: SkillTask | None, timeout: float = 300.0) -> ValidationReport:
@@ -539,27 +697,52 @@ def validate_candidate(candidate: SkillCandidate, task: SkillTask | None, timeou
         return validate_file(path, task, candidate.test_solutions, timeout)
 
 
-_REPORT_PREFIX = "@@pde-agent-report@@"
-
-
 def _child_main() -> None:
-    payload = json.loads(sys.stdin.read())
+    """The exam, in the limited child process."""
+    payload, answer = sandbox.read_request()
     try:
         module = load_module(Path(payload["path"]))
-    except Exception:
+    except BaseException:
         report = ValidationReport(ok=False, message="importing the module failed:\n" + traceback.format_exc(limit=3)[-1500:])
     else:
         task = SkillTask.from_dict(payload["task"]) if payload.get("task") else None
-        report = run_exam(module, task, payload.get("test_solutions", []))
-    print(_REPORT_PREFIX + json.dumps(report.to_dict()), flush=True)
+        try:
+            report = run_exam(module, task, payload.get("test_solutions", []))
+        except BaseException as exc:  # SystemExit and friends from the skill: still an answer
+            report = ValidationReport(ok=False, message=f"the exam stopped: {type(exc).__name__}: {exc}"[:1500])
+    sandbox.write_answer(answer, payload, report.to_dict())
+
+
+def _run_main() -> None:
+    """One solve of a learned skill, in the limited child process."""
+    from .ode import problem_from_dict
+
+    payload, answer = sandbox.read_request()
+    try:
+        module = load_module(Path(payload["path"]))
+        solve = getattr(module, "solve")
+        problem = problem_from_dict(payload["problem"]).for_solver()
+        result = solve(problem, int(payload["n"]), dict(payload.get("options") or {}))
+        data = {"ok": True, "result": sandbox.result_to_json(result)}
+    except SolverDiverged as exc:
+        data = {"ok": False, "error": "SolverDiverged", "message": str(exc)[:600]}
+    except BaseException as exc:
+        data = {"ok": False, "error": type(exc).__name__, "message": str(exc)[:600]}
+    sandbox.write_answer(answer, payload, data)
 
 
 # --- the library on disk --------------------------------------------------------------
 
 
 class SkillLibrary:
-    def __init__(self, root: Path | str):
+    """Installed skills: ``<name>.py`` with a ``<name>.json`` manifest (exam result, metadata, code hash).
+
+    ``timeout``: the wall-clock limit of one solve by a learned skill (its own process).
+    """
+
+    def __init__(self, root: Path | str, timeout: float = 300.0):
         self.root = Path(root)
+        self.timeout = timeout
 
     def manifests(self) -> list[dict]:
         if not self.root.exists():
@@ -567,10 +750,20 @@ class SkillLibrary:
         items = []
         for path in sorted(self.root.glob("*.json")):
             try:
-                items.append(json.loads(path.read_text(encoding="utf-8")))
+                manifest = json.loads(path.read_text(encoding="utf-8"))
             except (OSError, json.JSONDecodeError):
                 continue
+            if isinstance(manifest, dict):
+                manifest["_manifest"] = path.name
+                items.append(manifest)
         return sorted(items, key=lambda m: m.get("created", ""))
+
+    def _path(self, manifest: dict) -> Path:
+        """The skill file a manifest names, which has to sit in this library (no ``../`` or absolute paths)."""
+        name = str(manifest.get("file", ""))
+        if not re.fullmatch(r"[A-Za-z0-9_.\-]+\.py", name) or name.startswith("."):
+            raise ValueError(f"manifest names an invalid skill file {name!r}")
+        return self.root / name
 
     def install(self, candidate: SkillCandidate, report: ValidationReport, task: SkillTask | None, origin: str = "llm") -> Path:
         self.root.mkdir(parents=True, exist_ok=True)
@@ -590,16 +783,32 @@ class SkillLibrary:
             "task": task.to_dict() if task else None,
             "validation": report.to_dict(),
             "exam_version": EXAM_VERSION,
+            "code_hash": code_hash(candidate.code),
         }
         path.with_suffix(".json").write_text(json.dumps(manifest, ensure_ascii=False, indent=2), encoding="utf-8")
         return path
 
-    def load_file(self, path: Path, registry: SolverRegistry, equations: EquationBook) -> SolverSpec:
-        module = load_module(path)
-        equation = equation_from_module(module)
-        spec = solver_from_module(module)
-        if equation is not None and equation.kind not in equations:
-            equations.add(equation)
+    def load_file(self, path: Path, registry: SolverRegistry, equations: EquationBook,
+                  manifest: dict | None = None) -> SolverSpec:
+        """Register an examined skill from its manifest; its code is not imported here (it runs in a child)."""
+        path = Path(path)
+        if manifest is None:
+            manifest = json.loads(path.with_suffix(".json").read_text(encoding="utf-8"))
+        meta = (manifest.get("validation") or {}).get("meta")
+        if not isinstance(meta, dict) or not isinstance(meta.get("solver"), dict):
+            raise ValueError(f"{path.name}: the manifest has no exam metadata")
+        if manifest.get("code_hash") != code_hash(path.read_text(encoding="utf-8")):
+            raise ValueError(f"{path.name}: the code changed since its exam")
+        examined = meta.get("examined")
+        examined = (int(examined[0]), str(examined[1])) if isinstance(examined, list) and len(examined) == 2 else None
+        spec = spec_from_meta(meta["solver"], path, examined, self.timeout)
+        if meta.get("equation"):
+            task = manifest.get("task") or {}
+            equation = equation_from_meta(meta["equation"], dict(task.get("coefficients") or {}))
+            if equation.kind != spec.kind:
+                raise ValueError(f"{path.name}: EQUATION kind and SOLVER kind differ")
+            if equation.kind not in equations:
+                equations.add(equation)
         if spec.kind != "ode" and spec.kind not in equations:
             raise ValueError(f"{path.name}: unknown equation kind {spec.kind!r}")
         registry.register(spec)
@@ -608,35 +817,46 @@ class SkillLibrary:
     def load_into(self, registry: SolverRegistry, equations: EquationBook, timeout: float = 300.0) -> list[str]:
         """Load every installed skill; returns a sentence for each one that is disabled or failed to load.
 
-        A skill admitted by an older exam is examined again first. If it fails,
-        its manifest gets ``disabled`` (the reason) and it is not loaded again
-        until someone deletes that entry.
+        A skill admitted by an older exam, or whose code changed since its exam
+        (the manifest keeps a hash of the code), is examined again first. If it
+        fails, its manifest gets ``disabled`` (the reason) and it is not loaded
+        again until someone deletes that entry.
         """
         errors = []
         for manifest in self.manifests():
-            path = self.root / manifest.get("file", "")
+            manifest_name = manifest.pop("_manifest")
+            try:
+                path = self._path(manifest)
+            except ValueError as exc:
+                errors.append(f"技能清单 {manifest_name} 加载失败：{exc}")
+                continue
             if manifest.get("disabled"):
                 errors.append(f"技能 {path.name} 已停用：{manifest['disabled']}")
                 continue
             try:
-                problems = static_check(path.read_text(encoding="utf-8"))
+                code = path.read_text(encoding="utf-8")
+                problems = static_check(code)
                 if problems:  # admitted under an older, looser check, or edited since: checked again every start
                     errors.append(f"技能 {path.name} 加载失败：静态检查不通过：{'；'.join(problems[:3])}")
                     continue
-                if int(manifest.get("exam_version", 1)) < EXAM_VERSION:
+                changed = manifest.get("code_hash") not in (None, code_hash(code))
+                old = int(manifest.get("exam_version", 1)) < EXAM_VERSION or not manifest.get("code_hash")
+                if old or changed:
                     task = SkillTask.from_dict(manifest["task"]) if manifest.get("task") else None
                     tests = [case["exact"] for case in manifest.get("validation", {}).get("cases", [])]
                     report = validate_file(path, task, tests, timeout)
                     if not report.ok:
-                        manifest.update(disabled=report.message,
+                        why = f"代码在考试后改过，重新考试没通过：{report.message}" if changed else report.message
+                        manifest.update(disabled=why,
                                         disabled_at=datetime.now(timezone.utc).isoformat(timespec="seconds"))
-                        self._save_manifest(path.with_suffix(".json"), manifest)
-                        errors.append(f"技能 {path.name} 已停用：{report.message}")
+                        self._save_manifest(self.root / manifest_name, manifest)
+                        errors.append(f"技能 {path.name} 已停用：{why}")
                         continue
-                    manifest.update(exam_version=EXAM_VERSION, validation=report.to_dict())
+                    manifest.update(exam_version=EXAM_VERSION, validation=report.to_dict(), code_hash=code_hash(code),
+                                    examined_at=datetime.now(timezone.utc).isoformat(timespec="seconds"))
                     manifest.pop("disabled_at", None)
-                    self._save_manifest(path.with_suffix(".json"), manifest)
-                self.load_file(path, registry, equations)
+                    self._save_manifest(self.root / manifest_name, manifest)
+                self.load_file(path, registry, equations, manifest)
             except Exception as exc:
                 errors.append(f"技能 {path.name} 加载失败：{exc}")
         return errors
@@ -650,4 +870,3 @@ class SkillLibrary:
             os.replace(tmp, path)
         except OSError:
             pass
-

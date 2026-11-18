@@ -43,10 +43,9 @@ def _agent(tmp_path, *specs, only=None):
     return agent
 
 
-# Held-out by regularity since v2.1.0: the residual check cannot pass across a shock or a spike the grid
-# hardly resolves, so the agent reports a failure although the answer is right (cautious, not false; the
-# shock checks are planned for v2.3.0).
-CAUTIOUS = {"test/burgers-shock", "test/burgers-shock-tight", "test/exam-burgers-shock", "test/advection-spike"}
+# The narrow spike: no method's error estimate reaches 1e-3 by n = 4096, although the answer is right
+# (cautious, not false). The shock problems failed here until v2.3.0 checks them in weak form.
+CAUTIOUS = {"test/advection-spike"}
 
 
 def test_correct_answers_pass_on_every_blind_eval_problem(tmp_path):
@@ -57,7 +56,9 @@ def test_correct_answers_pass_on_every_blind_eval_problem(tmp_path):
         report = agent.solve(blind(case.problem), case.tol, learn=False)
         assert report.success, (case.name, report.message)
         assert report.crosscheck is not None and report.crosscheck.passed, (case.name, report.crosscheck.describe())
-        assert any(c.name == "residual" for c in report.crosscheck.checks), case.name
+        names = {c.name for c in report.crosscheck.checks}
+        # pointwise where the solution is smooth, in weak form (plus entropy) where it may jump (v2.3.0)
+        assert "residual" in names or {"weak", "entropy"} <= names, case.name
 
 
 def test_exact_solution_needs_no_crosscheck(tmp_path):

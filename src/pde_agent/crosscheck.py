@@ -25,6 +25,17 @@ checks look at the answer itself instead:
   - energy ``½∫u_t² + ½∫u S(u)`` of a linear second order equation
     ``u_tt + S(u) = 0`` (waves) on periodic or zero boundaries.
 
+* **weak form and entropy** (answers that may hold a shock or a jump, see
+  ``verify.weak_solution``): there ``L(u) = f`` holds in integral form only,
+  and a strong residual at a shock is O(1) however good the answer. For
+  ``u_t + F(u)_x = f`` with a known flux the check is, for smooth test
+  functions ``φ`` (periodic, or vanishing at the walls),
+  ``d/dt ∫φu = ∫φ'F(u) + ∫φf``, relative to the size of its terms; and
+  the entropy condition ``d/dt ∫ψη(u) ≤ ∫ψ'q(u) + ∫ψη'(u)f`` for
+  ``ψ ≥ 0`` with ``η = u²/2`` picks the physical solution among the weak
+  ones (an expansion shock satisfies the weak form but makes entropy).
+  Energy of a nonlinear law is then only required not to grow.
+
 * **independent integration** (ODEs): the final state is compared with a run
   of a different, tightly toleranced adaptive integrator (DOP853 for non-stiff
   problems, Radau or BDF for stiff ones). An ODE answer has no grid to
@@ -49,6 +60,7 @@ from scipy.interpolate import RectBivariateSpline, make_interp_spline
 
 from .problem import PDEProblem, T, X, Y
 from .solvers.base import SolveResult, SolverSpec, evaluate, mesh
+from .verify import SHOCK_KINDS, weak_solution
 
 # how far the answer may be off, as a multiple of the tolerance (and never less than the floor)
 RESIDUAL_FACTOR = 20.0
@@ -64,7 +76,8 @@ ODE_FACTOR = 10.0  # the independent ODE run may differ by this multiple of tol 
 ODE_FLOOR = 1e-8
 ODE_STIFF = 50.0  # stiffness above which the reference run uses an implicit method
 
-CHECK_NAMES = {"residual": "残差抽查", "mass": "质量守恒", "energy": "能量守恒", "energy_decay": "能量不增",
+CHECK_NAMES = {"residual": "残差抽查", "weak": "积分形式残差", "entropy": "熵条件", "mass": "质量守恒",
+               "energy": "能量守恒", "energy_decay": "能量不增",
                "reference": "独立积分对照", "grid": "网格坐标", "time": "返回时间", "boundary": "边界条件",
                "periodic": "周期条件", "initial": "初值", "initial_velocity": "初速度", "exact": "对比精确解"}
 
@@ -305,8 +318,9 @@ def residual_check(problem: PDEProblem, result: SolveResult, sym: _Symbolic, tol
         f = evaluate(problem.fn("source"), points, t_final)
         terms = _values(sym, values, points, t_final, f)
     residual = sum(terms) - f
-    size = np.max(np.abs(np.stack([*terms, f])), axis=0)
-    scale = float(np.sqrt(np.mean(size**2)))
+    # scale-free: ‖L(u) - f‖₂ over the largest of ‖each term of L(u)‖₂ and ‖f‖₂, so neither the units of u
+    # nor a source that is large or tiny next to the rest moves the verdict
+    scale = max(float(np.sqrt(np.mean(np.square(term)))) for term in [*terms, f])
     limit = _residual_limit(tol)
     if not np.all(np.isfinite(residual)) or not math.isfinite(scale):
         return Check("residual", math.inf, limit, False, "残差不是有限数")
@@ -314,6 +328,84 @@ def residual_check(problem: PDEProblem, result: SolveResult, sym: _Symbolic, tol
         return Check("residual", 0.0, limit, True, "方程各项都为 0")
     value = float(np.sqrt(np.mean(residual**2))) / scale
     return Check("residual", value, limit, value <= limit, f"{PROBES} 个网格点之间的随机点")
+
+
+WEAK_MODES = 4  # test functions per family in the weak-form and entropy checks
+
+
+def _weak_tests(problem: PDEProblem, x: np.ndarray, positive: bool) -> list[tuple[np.ndarray, np.ndarray]]:
+    """Smooth test functions ``(φ, φ')`` on the grid: periodic, or vanishing at both walls; ``positive``: φ ≥ 0."""
+    (a, b), periodic = problem.domain[0], problem.boundary == "periodic"
+    length = b - a
+    s = (x - a) / length
+    out = []
+    for k in range(1, WEAK_MODES + 1):
+        if periodic:
+            w = 2 * np.pi * k
+            if positive:
+                out.append((1.0 + 0.9 * np.cos(w * s + k), -0.9 * w / length * np.sin(w * s + k)))
+            else:
+                out.append((np.sin(w * s), w / length * np.cos(w * s)))
+                out.append((np.cos(w * s), -w / length * np.sin(w * s)))
+        else:
+            w = np.pi * k
+            if positive:  # sin^2(pi s) (1 + 0.8 sin(2 pi k s)) >= 0, zero at both walls
+                base, dbase = np.sin(np.pi * s) ** 2, 2 * np.pi / length * np.sin(np.pi * s) * np.cos(np.pi * s)
+                bump = 1.0 + 0.8 * np.sin(2 * w * s)
+                out.append((base * bump, dbase * bump + base * 1.6 * w / length * np.cos(2 * w * s)))
+            else:
+                out.append((np.sin(w * s), w / length * np.cos(w * s)))
+    if periodic and positive:
+        out.append((np.ones_like(s), np.zeros_like(s)))  # the total entropy
+    return out
+
+
+def weak_checks(problem: PDEProblem, result: SolveResult, tol: float, neighbours: Neighbours) -> list[Check]:
+    """Integral-form residual and entropy condition of ``u_t + F(u)_x = f`` (1-D, a flux these solvers know).
+
+    Both use the answer at ``T`` and the runs at ``T ± d`` for the time derivative; integrals are trapezoid
+    sums on the grid, which hold across a jump. Values are relative to the largest term of the balance.
+    """
+    from .solvers.conservation import conservation_form
+
+    limit = _residual_limit(tol)
+    form = conservation_form(problem)
+    if form is None:
+        return [Check.inconclusive("weak", "不知道这个方程的通量，没法做积分形式的检查", limit=limit)]
+    flux, entropy_flux = form
+    x = result.grid[0]
+    t_final = problem.t_final
+    u, later, earlier = (np.asarray(r, dtype=float) for r in (result.u, neighbours[1].u, neighbours[-1].u))
+    with np.errstate(all="ignore"):
+        f = np.asarray(evaluate(problem.fn("source"), (x,), t_final), dtype=float) * np.ones_like(x)
+
+    def integral(values: np.ndarray) -> float:
+        return float(np.trapezoid(values, x)) if hasattr(np, "trapezoid") else float(np.trapz(values, x))
+
+    def balance(tests, density, fluxes, production):
+        """(rate - transport - production, size of the largest term) for each test function."""
+        for phi, dphi in tests:
+            rate = (integral(phi * density(later)) - integral(phi * density(earlier))) / (2 * neighbours.delta)
+            moved = integral(dphi * fluxes(u))
+            made = integral(phi * production(u))
+            size = max(abs(rate), integral(np.abs(dphi * fluxes(u))), integral(np.abs(phi * production(u))))
+            yield rate - moved - made, size
+
+    rows = list(balance(_weak_tests(problem, x, False), lambda v: v, flux, lambda v: f))
+    scale = max(s for _, s in rows)
+    checks = []
+    if not all(math.isfinite(r) and math.isfinite(s) for r, s in rows):
+        return [Check("weak", math.inf, limit, False, "积分不是有限数")]
+    value = max(abs(r) for r, _ in rows) / scale if scale > 1e-14 else 0.0
+    checks.append(Check("weak", value, limit, value <= limit,
+                        f"d/dt∫φu = ∫φ'F(u) + ∫φf，{len(rows)} 个光滑测试函数（解可能有间断，逐点残差不适用）"))
+    rows = list(balance(_weak_tests(problem, x, True), lambda v: 0.5 * v * v, entropy_flux, lambda v: v * f))
+    scale = max(s for _, s in rows)
+    made = max(r for r, _ in rows) / scale if scale > 1e-14 else 0.0
+    value = max(made, 0.0)
+    checks.append(Check("entropy", value, limit, value <= limit,
+                        f"η = u²/2：d/dt∫ψη ≤ ∫ψ'q(u) + ∫ψuf（ψ ≥ 0），最大的熵产生相对值 {made:.1e}"))
+    return checks
 
 
 def _residual_limit(tol: float) -> float:
@@ -403,7 +495,9 @@ def conservation_laws(equation, problem: PDEProblem, sym: _Symbolic | None) -> l
             return laws
         if equation.time_order == 1:
             if all(abs(v) < 1e-8 for v in signs):
-                laws.append("energy")
+                # a smooth solution keeps its energy; past a shock a nonlinear law dissipates it (entropy)
+                shocked = problem.kind in SHOCK_KINDS and weak_solution(problem)
+                laws.append("energy_decay" if shocked else "energy")
             elif all(v > -1e-8 for v in signs):
                 laws.append("energy_decay")
         elif equation.time_order == 2 and sym is not None and sym.linear and _plain_second_order(sym) \
@@ -517,7 +611,12 @@ def cross_check(equation, spec: SolverSpec, problem: PDEProblem, result: SolveRe
         return out
     sym = symbolic_operator(equation, problem.coefficients, problem.dim)
     neighbours = Neighbours(spec, problem, result, options) if problem.time_dependent else None
-    if sym is None:
+    if neighbours is not None and weak_solution(problem):
+        try:
+            out.checks += weak_checks(problem, result, tol, neighbours)
+        except Exception as exc:
+            out.checks.append(Check.inconclusive("weak", f"积分形式检查出错：{type(exc).__name__}", limit=limit))
+    elif sym is None:
         out.checks.append(Check.inconclusive("residual", "算子太特殊，没法代回方程", limit=limit))
     else:
         try:

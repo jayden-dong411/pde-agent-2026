@@ -10,6 +10,12 @@ minmod limiter and SSP-RK2 (second order away from extrema, no new extrema),
 WENO5 with Lax-Friedrichs flux splitting and SSP-RK3 (fifth order on smooth
 data, essentially non-oscillatory at jumps). ``work`` counts node updates times
 flux evaluations per step: 1 for Rusanov, 4 for MUSCL, 12 for WENO5.
+
+Linear advection steps with one fixed step. A nonlinear flux sets its step
+anew every step from the current solution (largest |F'(u)| over the cells and
+the boundary values at that time), so a solution that grows (a source, an
+inflow) stays within the CFL limit and one that decays after a shock takes
+longer steps; the last step lands on ``t_final``.
 """
 
 from __future__ import annotations
@@ -17,7 +23,7 @@ from __future__ import annotations
 import numpy as np
 
 from ..problem import PDEProblem
-from .base import SolveResult, SolverSpec, check_growth, grid, growth_limit, step_work, time_grid
+from .base import MAX_STEPS, SolveResult, SolverSpec, check_growth, grid, growth_limit, step_work, time_grid
 
 GHOSTS = 3  # WENO5 reads three cells to each side
 WEIGHT = {"rusanov": 1.0, "muscl": 4.0, "weno5": 12.0}
@@ -29,6 +35,17 @@ def _flux(kind: str, coefficients: dict):
         c = coefficients.get("c", 1.0)
         return (lambda u: c * u), (lambda u: np.full_like(u, abs(c)))
     return (lambda u: 0.5 * u * u), np.abs
+
+
+def conservation_form(problem: PDEProblem):
+    """``(F, q)``: the flux of ``u_t + F(u)_x = f`` and the entropy flux ``q`` that goes with the entropy
+    ``u^2/2`` (``q' = u F'``), for the kinds these solvers know; ``None`` for others."""
+    if problem.kind == "advection":
+        c = problem.coefficients.get("c", 1.0)
+        return (lambda u: c * u), (lambda u: 0.5 * c * u * u)
+    if problem.kind == "burgers_inviscid":
+        return (lambda u: 0.5 * u * u), (lambda u: u ** 3 / 3.0)
+    return None
 
 
 def _speed(problem: PDEProblem, xs: np.ndarray) -> float:
@@ -90,7 +107,8 @@ def _solve(problem: PDEProblem, n: int, options: dict, method: str) -> SolveResu
     h = float(x[1] - x[0])
     periodic = problem.boundary == "periodic"
     cells = x[:-1] if periodic else x
-    steps, dt = time_grid(problem.t_final, options.get("cfl", CFL[method]) * h / _speed(problem, x))
+    cfl = options.get("cfl", CFL[method])
+    steps, dt = time_grid(problem.t_final, cfl * h / _speed(problem, x))
     u = np.asarray(problem.fn("initial")(cells, 0.0, 0.0), dtype=float) * np.ones_like(cells)
     f = problem.fn("source")
     g_fn = None if periodic else problem.fn("boundary_value")
@@ -106,19 +124,40 @@ def _solve(problem: PDEProblem, n: int, options: dict, method: str) -> SolveResu
         faces = _face_fluxes(method, ue, flux, speed)
         return -(faces[1:] - faces[:-1]) / h + f(cells, 0.0, t)
 
-    for k in range(steps):
-        t = k * dt
+    def advance(u: np.ndarray, t: float, dt: float) -> np.ndarray:
         if method == "rusanov":
-            u = u + dt * rhs(u, t)
-        elif method == "muscl":  # SSP-RK2 (Heun)
+            return u + dt * rhs(u, t)
+        if method == "muscl":  # SSP-RK2 (Heun)
             u1 = u + dt * rhs(u, t)
-            u = 0.5 * u + 0.5 * (u1 + dt * rhs(u1, t + dt))
-        else:  # SSP-RK3
-            u1 = u + dt * rhs(u, t)
-            u2 = 0.75 * u + 0.25 * (u1 + dt * rhs(u1, t + dt))
-            u = u / 3 + 2 / 3 * (u2 + dt * rhs(u2, t + 0.5 * dt))
-        if k % 64 == 0:
-            check_growth(u, limit, name, k)
+            return 0.5 * u + 0.5 * (u1 + dt * rhs(u1, t + dt))
+        u1 = u + dt * rhs(u, t)  # SSP-RK3
+        u2 = 0.75 * u + 0.25 * (u1 + dt * rhs(u1, t + dt))
+        return u / 3 + 2 / 3 * (u2 + dt * rhs(u2, t + 0.5 * dt))
+
+    if problem.kind == "advection":
+        for k in range(steps):
+            u = advance(u, k * dt, dt)
+            if k % 64 == 0:
+                check_growth(u, limit, name, k)
+        largest = dt
+    else:  # nonlinear: the step follows the current wave speeds
+        t, steps, largest = 0.0, 0, 0.0
+        while t < problem.t_final * (1 - 1e-12):
+            fastest = float(np.max(speed(u))) if u.size else 0.0
+            if g_fn is not None:
+                fastest = max(fastest, float(np.max(np.abs(np.asarray(g_fn(x[[0, -1]], 0.0, t), dtype=float)))))
+            step = cfl * h / max(fastest, 1e-12)
+            step = min(step, problem.t_final - t)
+            remaining = problem.t_final - t - step
+            if 0 < remaining < 1e-9 * problem.t_final:
+                step += remaining  # do not leave a sliver for a last step
+            u = advance(u, t, step)
+            t, steps, largest = t + step, steps + 1, max(largest, step)
+            if steps % 64 == 0:
+                check_growth(u, limit, name, steps)
+            if steps > MAX_STEPS:
+                raise ValueError(f"needs more than {MAX_STEPS} time steps; this grid is too fine for the scheme")
+        dt = problem.t_final / max(steps, 1)  # the mean step, for the checks that step around t_final
     check_growth(u, limit, name, steps)
     if periodic:
         out = np.append(u, u[0])
@@ -136,7 +175,9 @@ def _solve(problem: PDEProblem, n: int, options: dict, method: str) -> SolveResu
         else:
             out[0] = u[0]
     return SolveResult(u=out, grid=(x,), n=n, t=problem.t_final, steps=steps, dt=dt,
-                       work=float(cells.size * steps * WEIGHT[method]), info={"cfl": dt * _speed(problem, x) / h})
+                       work=float(cells.size * steps * WEIGHT[method]),
+                       info={"cfl": cfl if problem.kind != "advection" else dt * _speed(problem, x) / h,
+                             "largest_step": largest})
 
 
 def _cost(method: str):

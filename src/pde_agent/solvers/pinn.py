@@ -208,7 +208,10 @@ def solve_pinn(problem: PDEProblem, n: int, options: dict) -> SolveResult:
 
     matrix = np.vstack([w * b for w, b in zip(weights, blocks)])
     rhs = np.concatenate([w * t for w, t in zip(weights, targets)])
-    coef, _, rank, _ = lstsq(matrix, rhs, lapack_driver="gelsd")
+    coef, _, rank, singular = lstsq(matrix, rhs, lapack_driver="gelsd")
+    seed = 1000 + n
+    diagnostics = _diagnostics(problem, net, coef, rank, singular, a_int, z, field, spans, interior, edge_points,
+                               seed, lam / scale)
 
     axes = grid(problem, n)
     nodes = mesh(axes)
@@ -229,7 +232,92 @@ def solve_pinn(problem: PDEProblem, n: int, options: dict) -> SolveResult:
         u[..., -1] = u[..., 0] if dim == 1 else u[..., -1]
     flops = matrix.shape[0] * matrix.shape[1] ** 2
     return SolveResult(u=u, grid=axes, n=n, t=problem.t_final, work=flops / FLOPS_PER_WORK,
-                       info={"units": units, "collocation": len(z), "rank": int(rank)})
+                       info={"units": units, "collocation": len(z), "rank": int(rank), "diagnostics": diagnostics})
+
+
+def _terms(problem: PDEProblem, net: _Net, z: np.ndarray, coef: np.ndarray) -> list[np.ndarray]:
+    """The operator's separate terms at ``z`` (time derivative, space derivative): the residual's yardstick."""
+    dim = problem.dim
+    terms = []
+    if problem.time_dependent:
+        terms.append(net.rows(z, {dim: 2 if problem.kind == "wave" else 1}) @ coef)
+    if problem.kind == "advection":
+        terms.append(net.rows(z, {0: 1}) @ coef)
+    else:
+        terms.append(sum(net.rows(z, {axis: 2}) for axis in range(dim)) @ coef)
+    return terms
+
+
+def _relative(residual: np.ndarray, *scales: np.ndarray) -> float:
+    """RMS of ``residual`` against the largest RMS of ``scales`` (so a zero source does not divide by zero)."""
+    def rms(v) -> float:
+        return float(np.sqrt(np.mean(np.square(v)))) if np.size(v) else 0.0
+
+    return rms(residual) / max(max((rms(v) for v in scales), default=0.0), 1e-12)
+
+
+def _diagnostics(problem, net, coef, rank, singular, a_int, z, field, spans, interior, edge_points, seed,
+                 weight) -> dict:
+    """How well the network fits, measured where it was trained and at points it never saw.
+
+    * ``condition``: largest over smallest singular value of the least-squares matrix (the fit's sensitivity);
+    * ``residual``: relative PDE residual at the collocation points;
+    * ``fresh_residual``: the same at random points the fit did not use (much larger = over-fitting);
+    * ``boundary_error`` / ``initial_error``: largest misfit of the boundary and initial conditions.
+    """
+    singular = np.asarray(singular, dtype=float)
+    smallest = float(singular[-1]) if singular.size else 0.0
+    condition = float(singular[0] / smallest) if singular.size and smallest > 0 else math.inf
+    f_int = field("source", interior)
+    lu = a_int @ coef
+    rng = np.random.default_rng(seed + 7919)
+    fresh = [rng.uniform(lo, hi, size=max(64, len(z) // 2)) for lo, hi in spans]
+    z_fresh = net.normalise(*fresh)
+    lu_fresh = _operator_rows(problem, net, z_fresh) @ coef
+    f_fresh = field("source", fresh)
+    out = {
+        "seed": int(seed), "units": int(coef.size), "rank": int(rank), "lambda": round(float(weight), 4),
+        "condition": condition,
+        "residual": _relative(lu - f_int, f_int, *_terms(problem, net, z, coef)),
+        "fresh_residual": _relative(lu_fresh - f_fresh, f_fresh, *_terms(problem, net, z_fresh, coef)),
+    }
+    if problem.boundary != "periodic":
+        misfit = 0.0
+        for axis in range(problem.dim):
+            for value in spans[axis]:
+                pts = edge_points(axis, value)
+                g = field("boundary_value", pts)
+                misfit = max(misfit, float(np.max(np.abs(net.rows(net.normalise(*pts)) @ coef - g))))
+        out["boundary_error"] = misfit
+    if problem.time_dependent:
+        pts = edge_points(problem.dim, 0.0)
+        u0 = field("initial", pts)
+        out["initial_error"] = float(np.max(np.abs(net.rows(net.normalise(*pts)) @ coef - u0)))
+    return out
+
+
+def diagnostics_text(info: dict) -> str:
+    """One line for the attempt list: 'PINN 残差 2.1e-06（新点 3.4e-06），边界 1e-08，条件数 3e+09，秩 120/121'."""
+    d = (info or {}).get("diagnostics")
+    if not isinstance(d, dict):
+        return ""
+
+    def num(key) -> float:
+        value = d.get(key)
+        return float(value) if isinstance(value, (int, float)) and not isinstance(value, bool) else math.inf
+
+    residual, fresh = num("residual"), num("fresh_residual")
+    parts = [f"残差 {residual:.1e}（新点 {fresh:.1e}）"]
+    if "boundary_error" in d:
+        parts.append(f"边界 {num('boundary_error'):.1e}")
+    if "initial_error" in d:
+        parts.append(f"初值 {num('initial_error'):.1e}")
+    parts.append(f"条件数 {num('condition'):.0e}")
+    parts.append(f"秩 {d.get('rank')}/{d.get('units')}")
+    text = "PINN " + "，".join(parts)
+    if fresh > 1e-3 and fresh > 10 * max(residual, 1e-12):
+        text += "；新点上的残差大得多，网络可能过拟合了训练点"
+    return text
 
 
 def cost(problem: PDEProblem, n: int) -> float:

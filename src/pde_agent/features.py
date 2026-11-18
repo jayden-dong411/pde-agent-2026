@@ -8,7 +8,12 @@ problem in front of the agent:
 * ``smooth``: no kinks or jumps in the data (``Abs``, ``Heaviside``, ...),
 * ``stiffness``: for diffusion, how many times faster the finest mode in the
   initial data decays than the time span (``alpha * T * k_max^2``),
-* ``travel``: for waves and transport, how many domain lengths a signal crosses.
+* ``travel``: for waves and transport, how many domain lengths a signal crosses,
+* ``shock_time``: for a nonlinear conservation law (inviscid Burgers), when
+  smooth data first break into a shock (``1 / max(-u0')``, 0 when the data
+  jump). Past ``SHOCK_MARGIN`` of it the problem is tagged ``shock``: every
+  method converges at first order in L1 there, and the answer is verified in
+  weak form with the entropy condition.
 
 ODE systems (``dim`` 0, see ``ode.py``) have no grid data. Their features
 come from the Jacobian: ``stiffness`` is the time span times how much faster
@@ -33,7 +38,7 @@ import sympy as sp
 
 from .problem import PDEProblem
 from .solvers.base import SolverSpec
-from .verify import RESOLUTION_LIMIT, SHOCK_KINDS, TRANSPORT_KINDS, interpolation_mismatch
+from .verify import RESOLUTION_LIMIT, SHOCK_KINDS, SHOCK_MARGIN, TRANSPORT_KINDS, interpolation_mismatch, shock_time
 
 # a method of order p is assumed to make an error of FLOOR_RESOLUTION^p on the floor grid
 # (as if the floor were 10 intervals of a unit problem); finer grids gain (n_floor/n)^p
@@ -57,6 +62,7 @@ class ProblemFeatures:
     tags: tuple[str, ...] = ()
     ode: bool = False
     scale: float = 1.0  # ODE: oscillations or growth times in the time span (at least 1)
+    shock_time: float | None = None  # nonlinear conservation law: when smooth data break (inf: never)
 
     def to_dict(self) -> dict:
         data = {"floor": self.floor, "smooth": self.smooth, "stiffness": round(self.stiffness, 3),
@@ -79,6 +85,15 @@ class ProblemFeatures:
             parts.append(f"刚性（初值里的高频衰减比时间跨度快 {self.stiffness:.0f} 倍）")
         if "long" in self.tags:
             parts.append(f"长时间传播（跨过区域 {self.travel:.1f} 次）")
+        if self.shock_time is not None:
+            if self.shock_time == 0:
+                parts.append("初值有间断，解里有激波或稀疏波（按弱解验证：积分形式残差和熵条件）")
+            elif "shock" in self.tags:
+                parts.append(f"光滑初值约在 t ≈ {self.shock_time:.3g} 形成激波，终止时间已过（按弱解验证，L1 收敛阶按一阶估计）")
+            elif math.isfinite(self.shock_time):
+                parts.append(f"约在 t ≈ {self.shock_time:.3g} 才形成激波，终止时间前解是光滑的")
+            else:
+                parts.append("初值不会形成激波")
         return "；".join(parts)
 
 
@@ -142,6 +157,9 @@ def extract(problem: PDEProblem, floor: int) -> ProblemFeatures:
             feats.travel = abs(problem.coefficients.get(coeff, 1.0)) * problem.t_final / length
             if feats.travel > LONG:
                 tags.append("long")
+        feats.shock_time = shock_time(problem)
+        if feats.shock_time is not None and problem.t_final >= SHOCK_MARGIN * feats.shock_time:
+            tags.append("shock")
     feats.tags = tuple(tags)
     return feats
 
@@ -160,6 +178,9 @@ def predict(spec: SolverSpec, problem: PDEProblem, feats: ProblemFeatures, tol: 
         notes.append(f"间断不会自己变陡，L1 收敛阶约 {order:.2g}")
     elif not feats.smooth and order > 1:
         order, notes = 1.0, notes + ["数据不光滑，按一阶估计"]
+    elif "shock" in feats.tags and order > 1:
+        # a shock forms before t_final: every scheme is first order in L1 near it, whatever its smooth order
+        order, notes = 1.0, notes + [f"终止时间前会形成激波（t ≈ {feats.shock_time:.3g}），L1 收敛阶按一阶估计"]
     if "long" in feats.tags and "dissipative" in spec.traits:
         order, notes = 0.5, notes + ["长时间传播，耗散会累积，按半阶估计"]
     if "long" in feats.tags and "neural" in spec.traits:

@@ -1,15 +1,69 @@
-"""1-D heat equation ``u_t = alpha * u_xx + f`` with Dirichlet boundaries."""
+"""1-D heat equation ``u_t = alpha * u_xx + f`` with Dirichlet boundaries.
+
+The implicit schemes solve ``(I - c D2) u = rhs`` every step, with ``D2`` the
+second difference and ``c = theta * alpha * dt / h^2`` fixed for a run. The
+tridiagonal LU factors (LAPACK ``gttrf``) are computed once per ``(m, c)`` and
+kept in a small cache, so every step is one ``gttrs`` back substitution, and
+the extra runs of the checks and of a repeated solve on the same grid and step
+reuse them. The explicit part is a stencil, not a sparse matrix product; a
+source that does not depend on time is evaluated once.
+"""
 
 from __future__ import annotations
 
 import math
+from collections import OrderedDict
 
 import numpy as np
-import scipy.sparse as sparse
-from scipy.sparse.linalg import splu
+from scipy.linalg.lapack import dgttrf, dgttrs
 
-from ..problem import PDEProblem
-from .base import SolveResult, SolverSpec, check_growth, grid, growth_limit, laplacian_1d, step_work, time_grid
+from ..problem import PDEProblem, T
+from .base import SolveResult, SolverSpec, check_growth, grid, growth_limit, step_work, time_grid
+
+CACHE_SIZE = 32  # factorizations kept: each is 4 vectors of length m
+_FACTORS: OrderedDict = OrderedDict()
+CACHE_STATS = {"hits": 0, "misses": 0}
+
+
+class Tridiagonal:
+    """LU factors of ``I - c * D2`` on m interior nodes (``D2`` = second difference without 1/h^2)."""
+
+    def __init__(self, m: int, c: float):
+        lower = np.full(m - 1, -c)
+        diag = np.full(m, 1.0 + 2.0 * c)
+        upper = np.full(m - 1, -c)
+        *self.factors, info = dgttrf(lower, diag, upper)
+        if info != 0:
+            raise ValueError(f"singular implicit step matrix (gttrf info {info})")
+
+    def solve(self, rhs: np.ndarray) -> np.ndarray:
+        out, info = dgttrs(*self.factors, rhs)
+        if info != 0:
+            raise ValueError(f"gttrs failed (info {info})")
+        return out
+
+
+def factor(m: int, c: float) -> Tridiagonal:
+    """The (cached) factorization of ``I - c D2``: one per grid and step, shared by every run that needs it."""
+    key = (int(m), float(c))
+    found = _FACTORS.get(key)
+    if found is not None:
+        _FACTORS.move_to_end(key)
+        CACHE_STATS["hits"] += 1
+        return found
+    CACHE_STATS["misses"] += 1
+    found = _FACTORS[key] = Tridiagonal(m, c)
+    while len(_FACTORS) > CACHE_SIZE:
+        _FACTORS.popitem(last=False)
+    return found
+
+
+def second_difference(u: np.ndarray) -> np.ndarray:
+    """``u[i-1] - 2 u[i] + u[i+1]`` with zero values beyond both ends (boundary data go in the forcing)."""
+    out = -2.0 * u
+    out[1:] += u[:-1]
+    out[:-1] += u[1:]
+    return out
 
 
 class _Setup:
@@ -22,7 +76,12 @@ class _Setup:
         self.inner = self.x[1:-1]
         self.ends = self.x[[0, -1]]
         self.g = problem.fn("boundary_value")
-        self.f = problem.fn("source")
+        source = problem.expr("source")
+        if source is not None and not source.free_symbols & {T}:  # evaluate once, not every step
+            fixed = np.asarray(problem.fn("source")(self.inner, 0.0, 0.0), dtype=float) * np.ones_like(self.inner)
+            self.f = lambda x, y, t, fixed=fixed: fixed if np.shape(x) == fixed.shape else problem.fn("source")(x, y, t)
+        else:
+            self.f = problem.fn("source")
         self.u0 = problem.fn("initial")(self.x)
         self.t_final = problem.t_final
 
@@ -68,17 +127,18 @@ def _implicit(problem: PDEProblem, n: int, options: dict, theta: float, name: st
     s = _Setup(problem, n)
     steps, dt = time_grid(s.t_final, options.get("cfl", cfl) * s.h)
     m = s.inner.size
-    lap = laplacian_1d(m, s.h)
-    eye = sparse.identity(m, format="csc")
-    lhs = splu((eye - theta * dt * s.alpha * lap).tocsc())
-    rhs_op = (eye + (1.0 - theta) * dt * s.alpha * lap).tocsr()
+    r = s.alpha * dt / s.h**2
+    lhs = factor(m, theta * r)
+    explicit = (1.0 - theta) * r
     u = s.u0[1:-1].copy()
     limit = growth_limit(s.u0, s.f(s.x, 0.0, 0.0))
     forcing_old = s.alpha * s.boundary_vector(0.0) + s.f(s.inner, 0.0, 0.0)
     for k in range(steps):
         t_new = (k + 1) * dt
         forcing_new = s.alpha * s.boundary_vector(t_new) + s.f(s.inner, 0.0, t_new)
-        rhs = rhs_op @ u + dt * (theta * forcing_new + (1.0 - theta) * forcing_old)
+        rhs = u + dt * (theta * forcing_new + (1.0 - theta) * forcing_old)
+        if explicit:
+            rhs += explicit * second_difference(u)
         u = lhs.solve(rhs)
         forcing_old = forcing_new
         if k % 64 == 0:
@@ -103,10 +163,9 @@ def solve_bdf2(problem: PDEProblem, n: int, options: dict) -> SolveResult:
     s = _Setup(problem, n)
     steps, dt = time_grid(s.t_final, options.get("cfl", 1.0) * s.h)
     m = s.inner.size
-    lap = laplacian_1d(m, s.h)
-    eye = sparse.identity(m, format="csc")
-    half = splu((eye - 0.5 * dt * s.alpha * lap).tocsc())
-    lhs = splu((eye - (2.0 / 3.0) * dt * s.alpha * lap).tocsc())
+    r = s.alpha * dt / s.h**2
+    half = factor(m, 0.5 * r)
+    lhs = factor(m, (2.0 / 3.0) * r)
     limit = growth_limit(s.u0, s.f(s.x, 0.0, 0.0))
 
     def forcing(t: float) -> np.ndarray:

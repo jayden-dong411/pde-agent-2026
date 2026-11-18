@@ -43,6 +43,7 @@ from .problem import PDEProblem
 from .skills import SkillLibrary, SkillTask, ValidationReport, validate_candidate
 from .solvers import builtin_registry
 from .solvers.base import SolverDiverged, SolveResult, SolverSpec
+from .solvers.pinn import diagnostics_text
 from .verify import OSCILLATION_LIMIT, error_norm, exact_error, new_extrema, relative_error, resolution_floor, restrict
 
 ROUGH_SAFETY = 2.0  # an estimated error on non-smooth data must be below tol / ROUGH_SAFETY
@@ -497,13 +498,15 @@ class PDEAgent:
                 else:
                     error = diff / (ratio**order - 1.0)
                 prev_diff, prev_ratio = diff, ratio
+            diagnosis = diagnostics_text(result.info)  # a neural method says how well it fits (empty otherwise)
             report.attempts.append(Attempt(
                 spec.name, n, "ok" if error is not None else "unverified", error, result.work, result.runtime,
+                message=diagnosis,
             ))
             if error is not None:
                 how = "误差" if not estimated else "误差估计"
-                self._emit("error", f"{spec.name} n = {n}：{how} {error:.2e}（目标 {target:.2g}）", method=spec.name, n=n,
-                           error=error)
+                self._emit("error", f"{spec.name} n = {n}：{how} {error:.2e}（目标 {target:.2g}）"
+                           + (f"；{diagnosis}" if diagnosis else ""), method=spec.name, n=n, error=error)
 
             met = error is not None and error <= target and (confirmed or not adaptive)
             if adaptive:

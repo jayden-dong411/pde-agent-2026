@@ -15,7 +15,7 @@ import numpy as np
 import sympy as sp
 from scipy.interpolate import RectBivariateSpline, make_interp_spline
 
-from .problem import Field, PDEProblem
+from .problem import Field, PDEProblem, T, X, Y
 from .solvers.base import SolveResult, SolverSpec, evaluate, mesh
 
 
@@ -40,6 +40,52 @@ def error_norm(problem) -> str:
         if expr is not None and any(node.func.__name__ in _JUMP_FUNCS for node in sp.preorder_traversal(expr)):
             return "l1"
     return "max"
+
+
+SHOCK_MARGIN = 0.8  # past this fraction of the breaking time the solution is treated as a weak one (steep already)
+
+
+def shock_time(problem) -> float | None:
+    """When smooth data of a nonlinear conservation law first break into a shock (``SHOCK_KINDS``, 1-D).
+
+    For ``u_t + (u^2/2)_x = 0`` characteristics cross first at ``t_b = 1 / max(-u0')``: ``inf`` when ``u0``
+    nowhere decreases, ``0`` when the data already jump. ``None`` for other kinds (no breaking from smooth data).
+    A source term or inflow boundary can move ``t_b``; this is the screen from the initial data alone.
+    """
+    if getattr(problem, "dim", 0) != 1 or problem.kind not in SHOCK_KINDS or not problem.time_dependent:
+        return None
+    initial = problem.expr("initial")
+    if initial is None:
+        return None
+    if any(node.func.__name__ in _JUMP_FUNCS for node in sp.preorder_traversal(initial)):
+        return 0.0
+    a, b = problem.domain[0]
+    x = np.linspace(a, b, 4097)
+    try:
+        slope = sp.lambdify((X, Y, T), sp.diff(initial, X), modules=["scipy", "numpy"])
+        with np.errstate(all="ignore"):
+            values = np.asarray(slope(x, 0.0 * x, 0.0 * x), dtype=float) * np.ones_like(x)
+    except Exception:
+        return 0.0  # cannot tell: treat as breaking (the cautious side)
+    if not np.all(np.isfinite(values)):
+        return 0.0
+    steepest = float(np.max(-values))
+    return math.inf if steepest <= 1e-12 else 1.0 / steepest
+
+
+def weak_solution(problem) -> bool:
+    """Is the answer at ``t_final`` possibly discontinuous (a weak solution)?
+
+    Transport problems whose data jump, and nonlinear conservation laws past (``SHOCK_MARGIN`` of) the
+    breaking time. Then the equation does not hold pointwise: it is checked in integral form, and the
+    entropy condition picks the physical one among the weak solutions (``crosscheck.weak_checks``).
+    """
+    if getattr(problem, "dim", 0) != 1 or problem.kind not in TRANSPORT_KINDS or not problem.time_dependent:
+        return False
+    breaking = shock_time(problem)
+    if breaking is not None:
+        return problem.t_final >= SHOCK_MARGIN * breaking
+    return error_norm(problem) == "l1"
 
 
 def relative_error(u: np.ndarray, reference: np.ndarray, norm: str = "max") -> float:

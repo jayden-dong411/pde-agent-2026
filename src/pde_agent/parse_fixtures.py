@@ -9,7 +9,13 @@ is graded by what it means for the solver, not by how it is written:
   domain (sampled numerically), exact solutions too when one is stated,
 * Dirichlet data only on the boundary, since that is all a solver reads,
 * a new equation (Burgers, reaction-diffusion) must get a new kind, not a
-  known one; its source and coefficient names are free.
+  known one, and its operator together with its source must be the right
+  one: ``L(w) - f`` is compared on test functions ``w`` (zero included, so a
+  term moved between operator and source still counts), with the parse's own
+  coefficient names and values; an equation multiplied through by a constant
+  is the same equation,
+* an ODE system must have the same right-hand side ``f(t, y)``, initial
+  values, end time and stated exact solution, up to the order of the unknowns.
 """
 
 from __future__ import annotations
@@ -19,15 +25,17 @@ import math
 from dataclasses import dataclass
 
 import numpy as np
+import sympy as sp
 
-from .problem import PDEProblem
+from .ode import ODEProblem
+from .problem import PDEProblem, T, X, Y
 
 
 @dataclass
 class ParseFixture:
     name: str
     text: str
-    expected: PDEProblem
+    expected: PDEProblem | ODEProblem
     builtin: bool = True  # False: the equation is not a known kind
     notes: str = ""
 
@@ -37,6 +45,11 @@ def _p(kind, domain, t_final=None, coefficients=None, source="0", boundary="diri
     return PDEProblem(kind=kind, domain=domain, t_final=t_final, coefficients=coefficients or {}, source=source,
                       boundary=boundary, boundary_value=boundary_value, initial=initial,
                       initial_velocity=initial_velocity, exact=exact, equation=equation)
+
+
+def _o(rhs, initial, t_final, coefficients=None, exact=None, equation=""):
+    return ODEProblem(rhs=rhs, initial=initial, t_final=t_final, coefficients=coefficients or {}, exact=exact,
+                      equation=equation)
 
 
 UNIT = [(0.0, 1.0)]
@@ -82,6 +95,17 @@ def parse_fixtures() -> list[ParseFixture]:
           _p("reaction_diffusion", UNIT, 1.0, {"D": 0.01}, boundary_value="0.5", initial="0.5 + 0.1*sin(pi*x)",
              equation="u_t = D*u_xx + u*(1 - u) + f"),
           builtin=False),
+        # ordinary differential equations (kind "ode")
+        f("ode-logistic", "种群按 Logistic 规律增长：y' = 2y(1 - y)，初始 y(0) = 0.1，求 t 从 0 到 5 的解。",
+          _o(["2*y1*(1 - y1)"], ["0.1"], 5.0)),
+        f("ode-spring", "弹簧振子 x'' + 4x = 0，x(0) = 1，x'(0) = 0，算到 t = 10。",
+          _o(["y2", "-4*y1"], ["1", "0"], 10.0)),
+        f("ode-damped", "阻尼振子 x'' + 0.2x' + x = 0，初始位移 1、初速度 0，求 0 ≤ t ≤ 20 的运动。",
+          _o(["y2", "-y1 - 0.2*y2"], ["1", "0"], 20.0)),
+        f("ode-decay-exact", "解 y' = -50y，y(0) = 1，已知精确解 y = exp(-50t)，算到 t = 0.5。",
+          _o(["-50*y1"], ["1"], 0.5, exact=["exp(-50*t)"])),
+        f("ode-predator-prey", "捕食者-猎物模型：x' = 1.5x - xy，y' = -3y + xy，x(0) = 10，y(0) = 5，算到 t = 5。",
+          _o(["1.5*y1 - y1*y2", "-3*y2 + y1*y2"], ["10", "5"], 5.0)),
     ]
 
 
@@ -132,8 +156,18 @@ def _same_field(expected: PDEProblem, got: PDEProblem, name: str, points, times)
     return True
 
 
-def compare_parse(fixture: ParseFixture, got: PDEProblem, equations) -> list[str]:
+def compare_parse(fixture: ParseFixture, got, equations) -> list[str]:
     """What the parse ``got`` gets wrong about ``fixture`` (empty when it is right)."""
+    if isinstance(fixture.expected, ODEProblem):
+        if not isinstance(got, ODEProblem):
+            return [f"方程类型：应为常微分方程（ode），得到 {got.kind}"]
+        return _compare_ode(fixture.expected, got)
+    if isinstance(got, ODEProblem):
+        return [f"方程类型：应为偏微分方程 {fixture.expected.kind}，得到常微分方程"]
+    return _compare_pde(fixture, got, equations)
+
+
+def _compare_pde(fixture: ParseFixture, got: PDEProblem, equations) -> list[str]:
     expected = fixture.expected
     if fixture.builtin:
         expected = equations.complete(expected)
@@ -157,21 +191,25 @@ def compare_parse(fixture: ParseFixture, got: PDEProblem, equations) -> list[str
         wrong.append(f"边界类型：应为 {expected.boundary}，得到 {got.boundary}")
     if wrong:
         return wrong
-    if fixture.builtin:
-        for name, value in expected.coefficients.items():
-            have = got.coefficients.get(name)
-            if have is None or not _close(have, value):
-                wrong.append(f"系数 {name}：应为 {value:g}，得到 {have}")
     t_end = expected.t_final or 0.0
     times = np.linspace(0.0, t_end, 4) if t_end else [0.0]
     inside = _interior_points(expected)
     fields = []
     if fixture.builtin:
+        for name, value in expected.coefficients.items():
+            have = got.coefficients.get(name)
+            if have is None or not _close(have, value):
+                wrong.append(f"系数 {name}：应为 {value:g}，得到 {have}")
         fields.append(("source", times))
+        time_order = equations.get(expected.kind).time_order
+    else:
+        # a new equation: its operator and source are compared together, coefficients by their values
+        time_order, why = _operator_mismatch(expected, got, equations, inside, times)
+        if why:
+            wrong.append(why)
     if expected.time_dependent:
         fields.append(("initial", [0.0]))
-        eq = equations.get(expected.kind)
-        if eq is not None and eq.time_order == 2:
+        if time_order == 2:
             fields.append(("initial_velocity", [0.0]))
     if expected.has_exact():
         if not got.has_exact():
@@ -188,9 +226,125 @@ def compare_parse(fixture: ParseFixture, got: PDEProblem, equations) -> list[str
     return wrong
 
 
+def _residual(problem: PDEProblem, equations):
+    """``(time order, w -> L(w) - f)`` of a problem, for a known kind or its equation text."""
+    from .equations import operator_from_text
+
+    eq = equations.get(problem.kind)
+    source = problem.expr("source")
+    if eq is not None:
+        return eq.time_order, lambda w: eq.apply(w, problem.coefficients) - source
+    text = operator_from_text(problem.equation, problem.coefficients)  # ValueError if it cannot be read
+    return text.time_order, lambda w: text.apply(w, problem.coefficients) - source
+
+
+def _test_functions(dim: int, steady: bool) -> list:
+    """Smooth functions of the task's own variables; 0 and several amplitudes, so nonlinear terms show."""
+    ws = [sp.Integer(0)]
+    for a, b, shift, rate, amplitude in ((1.3, 0.7, 0.4, 0.9, 1.0), (0.6, 1.9, 1.1, 0.3, 2.5),
+                                         (2.2, 1.4, 0.2, 1.6, 0.4)):
+        w = amplitude * (sp.sin(a * X + b * Y + shift) * sp.exp(-rate * T) + a * X**2 * T + b * X * Y)
+        if dim == 1:
+            w = w.subs(Y, 0)
+        if steady:
+            w = w.subs(T, 0)
+        ws.append(w)
+    return ws
+
+
+def _operator_mismatch(expected: PDEProblem, got: PDEProblem, equations, points, times):
+    """``(expected time order, None or what is wrong)`` with the operator and source of ``got``.
+
+    ``L(w) - f`` of both is sampled on test functions; the parse may multiply
+    the whole equation by a nonzero constant, nothing else.
+    """
+    want_order, want = _residual(expected, equations)
+    try:
+        have_order, have = _residual(got, equations)
+    except (ValueError, KeyError) as exc:
+        return want_order, f"方程：读不出解析结果的算子（{got.equation!r}）：{exc}"
+    if have_order != want_order:
+        return want_order, f"方程：时间导数阶数应为 {want_order}，得到 {have_order}（{got.equation!r}）"
+    coords = list(points) + [np.zeros_like(points[0])] * (2 - len(points))
+    a, b = [], []
+    with np.errstate(all="ignore"):
+        for w in _test_functions(expected.dim, expected.t_final is None):
+            fa = sp.lambdify((X, Y, T), want(w), modules=["scipy", "numpy"])
+            fb = sp.lambdify((X, Y, T), have(w), modules=["scipy", "numpy"])
+            for t in times:
+                a.append(np.broadcast_to(np.asarray(fa(coords[0], coords[1], t), dtype=float), coords[0].shape))
+                b.append(np.broadcast_to(np.asarray(fb(coords[0], coords[1], t), dtype=float), coords[0].shape))
+    a, b = np.concatenate(a), np.concatenate(b)
+    if not np.all(np.isfinite(b)):
+        return want_order, f"方程：解析结果的算子在区域内不是有限值（{got.equation!r}）"
+    scale = float(a @ b) / float(a @ a) if float(a @ a) > 0 else 1.0
+    if abs(scale) < 1e-9 or float(np.max(np.abs(b - scale * a))) > 1e-6 * max(1.0, float(np.max(np.abs(b)))):
+        return want_order, (f"方程：算子和源项应为 {expected.equation}（系数 {expected.coefficients}，源项 "
+                            f"{expected.source}），得到 {got.equation}（系数 {got.coefficients}，源项 {got.source}）")
+    return want_order, None
+
+
+def _compare_ode(expected: ODEProblem, got: ODEProblem) -> list[str]:
+    """An ODE parse: same f(t, y), initial values, end time and stated exact solution, unknowns in any order."""
+    m = expected.size
+    if got.size != m:
+        return [f"方程个数：应为 {m} 个一阶方程，得到 {got.size} 个"]
+    wrong = []
+    if not _close(got.t_final, expected.t_final):
+        wrong.append(f"终止时间：应为 {expected.t_final}，得到 {got.t_final}")
+    rng = np.random.default_rng(0)
+    scale = 1.0 + np.abs(expected.y0)
+    samples = [(float(rng.uniform(0, expected.t_final)), expected.y0 + rng.uniform(-1, 1, m) * scale)
+               for _ in range(8)]
+    times = np.linspace(0, expected.t_final, 5)
+
+    def matches(perm) -> tuple[bool, bool, bool]:
+        """(right-hand side, initial values, exact solution) agree when got's y[perm[i]] is expected's y[i]."""
+        idx = list(perm)
+        y0 = np.allclose(got.y0[idx], expected.y0, rtol=RTOL, atol=RTOL)
+        rhs = True
+        with np.errstate(all="ignore"):
+            for t, y in samples:
+                yg = np.empty(m)
+                yg[idx] = y
+                want, have = expected.f(t, y), np.asarray(got.f(t, yg), dtype=float)[idx]
+                if not (np.all(np.isfinite(have)) and np.allclose(have, want, rtol=1e-6, atol=1e-9)):
+                    rhs = False
+                    break
+        exact = True
+        if expected.has_exact():
+            exact = got.has_exact() and all(
+                np.allclose(np.asarray(got.exact_at(t))[idx], expected.exact_at(t), rtol=1e-6, atol=1e-9)
+                for t in times)
+        return rhs, y0, exact
+
+    results = [matches(perm) for perm in itertools.permutations(range(m))]
+    if any(all(r) for r in results):
+        return wrong
+    rhs, y0, exact = max(results, key=sum)  # the closest ordering says what is wrong
+    if not rhs:
+        wrong.append(f"右端项：应为 {expected.rhs}（系数 {expected.coefficients}），得到 {got.rhs}（系数 {got.coefficients}）")
+    if not y0:
+        wrong.append(f"初值：应为 {expected.initial}，得到 {got.initial}")
+    if not exact:
+        wrong.append("精确解：题目给了精确解，解析结果没有" if not got.has_exact()
+                     else f"精确解：应为 {expected.exact}，得到 {got.exact}")
+    if rhs and y0 and exact:  # each part matches, but in different orderings of the unknowns
+        wrong.append("未知量顺序：右端项和初值对应的未知量顺序不一致")
+    return wrong
+
+
 def expected_reply(fixture: ParseFixture, notes: str = "") -> dict:
     """The fixture's problem as a reply in the parse schema (for tests with a stand-in model)."""
     p = fixture.expected
+    if isinstance(p, ODEProblem):
+        return {
+            "kind": "ode", "equation": p.equation, "domain": [], "t_final": p.t_final,
+            "coefficients": [{"name": k, "value": v} for k, v in p.coefficients.items()],
+            "source": "0", "boundary": "dirichlet", "boundary_value": "", "initial": "", "initial_velocity": "",
+            "exact": "", "ode": {"rhs": list(p.rhs), "initial": list(p.initial), "exact": list(p.exact or [])},
+            "notes": notes,
+        }
     return {
         "kind": p.kind, "equation": p.equation, "domain": [{"lower": a, "upper": b} for a, b in p.domain],
         "t_final": p.t_final or 0, "coefficients": [{"name": k, "value": v} for k, v in p.coefficients.items()],

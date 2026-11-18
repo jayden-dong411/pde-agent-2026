@@ -20,6 +20,10 @@ factor of four in practice, and the history shows which.
 
 Episodes shared by other people through an experience hub (see ``hub.py``)
 are kept in a second file and count the same as local ones.
+
+A store can refuse new episodes (``update=False``): then it is read-only, in
+memory as well as on disk. The evaluation uses this for its "no experience"
+and "frozen training experience" groups, and ``snapshot`` to copy a store.
 """
 
 from __future__ import annotations
@@ -236,8 +240,10 @@ def _read_jsonl(path: Path | None) -> list[dict]:
 
 
 class ExperienceStore:
-    def __init__(self, path: Path | str | None = None, shared_path: Path | str | None = None):
+    def __init__(self, path: Path | str | None = None, shared_path: Path | str | None = None,
+                 update: bool = True):
         self.path = Path(path) if path else None
+        self.update = update  # False: add() keeps nothing, so what is read never changes
         self.shared_path = Path(shared_path) if shared_path else None
         self.episodes: list[dict] = _read_jsonl(self.path)  # this computer's own solves
         self.shared: list[dict] = []  # other people's, from the experience hub
@@ -249,6 +255,8 @@ class ExperienceStore:
         self._ids = {episode_id(ep) for ep in self.episodes} | {ep["id"] for ep in self.shared}
 
     def add(self, episode: dict) -> None:
+        if not self.update:
+            return
         episode = {"id": uuid.uuid4().hex, "time": datetime.now(timezone.utc).isoformat(timespec="seconds"), **episode}
         self.episodes.append(episode)
         self._ids.add(episode["id"])
@@ -256,6 +264,19 @@ class ExperienceStore:
             self.path.parent.mkdir(parents=True, exist_ok=True)
             with self.path.open("a", encoding="utf-8") as fh:
                 fh.write(json.dumps(episode, ensure_ascii=False) + "\n")
+
+    def snapshot(self, update: bool = False) -> ExperienceStore:
+        """A copy of what this store holds, in memory only (no files); read-only unless ``update``."""
+        copy = ExperienceStore(update=update)
+        copy.episodes = [dict(ep) for ep in self.episodes]
+        copy.shared = [dict(ep) for ep in self.shared]
+        copy._ids = set(self._ids)
+        return copy
+
+    def fingerprint(self) -> str:
+        """A hash of every episode held: equal fingerprints, equal experience."""
+        text = json.dumps([self.episodes, self.shared], sort_keys=True, ensure_ascii=False, default=str)
+        return hashlib.sha256(text.encode("utf-8")).hexdigest()[:16]
 
     def add_shared(self, episodes: Iterable[dict]) -> int:
         """Keep other people's episodes (already checked); returns how many were new."""

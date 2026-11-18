@@ -212,8 +212,10 @@ class PDEAgent:
         self.validation_timeout = validation_timeout
         self.equations = builtin_equations()
         self.registry = builtin_registry()
+        # remember=False: no experience is read, kept or written (not even in memory for the next solve)
         self.memory = ExperienceStore(self.home / "experience.jsonl" if remember else None,
-                                      self.home / "shared_experience.jsonl" if remember else None)
+                                      self.home / "shared_experience.jsonl" if remember else None,
+                                      update=remember)
         self.skills = SkillLibrary(self.home / "skills")
         self.skill_errors = self.skills.load_into(self.registry, self.equations, timeout=self.validation_timeout)
 

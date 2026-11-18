@@ -43,6 +43,7 @@ jobs:
         run: |
           pip install -e ".[dev,llm,deepseek]" build
           pytest -q
+          pde-agent eval --gate
       - name: Build
         if: steps.version.outputs.exists == 'false'
         run: python -m build

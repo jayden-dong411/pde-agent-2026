@@ -18,3 +18,20 @@ jobs:
           python-version: ${{ matrix.python-version }}
       - run: pip install -e ".[dev,llm,deepseek]"
       - run: pytest -q
+
+  # The evaluation gate: every answer the agent reports as a success must really meet its tolerance,
+  # in each memory mode, on the held-out test set. A false success fails the build.
+  eval-gate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - run: pip install -e .
+      - run: pde-agent eval --gate --json eval.json
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: eval-results
+          path: eval.json

@@ -184,46 +184,69 @@ def _rate(part: int, whole: int) -> str:
 
 
 def cmd_eval(args) -> int:
-    from .evaluation import eval_cases, run_eval, run_parse_eval, summarize
+    from .evaluation import (ARMS, GROUPS, all_cases, dedupe, environment, gate_failures, memory_gain, run_eval,
+                             run_parse_eval, summarize, test_order)
 
-    report: dict = {}
+    report: dict = {"environment": environment()}
+    failures: list[str] = []
+    arms = {"train": "训练", "memory_off": "无经验", "memory_frozen": "冻结", "memory_online": "在线"}
+    groups = {"param": "参数留出", "regularity": "正则性留出", "ood": "分布外"}
     if not args.parse_only:
         parts = tuple(args.only) if args.only else ("pde", "ode")
-        cases = eval_cases(parts)
+        cases, dropped = dedupe(all_cases(parts))
         n_train = sum(c.split == "train" for c in cases)
-        print(f"评测：训练集 {n_train} 道（带精确解练习，只给“有经验”的 agent），"
-              f"测试集 {len(cases) - n_train} 道（藏起精确解，agent 自己估计误差，再用精确解打分）")
-        print(f"{'组':<6} {'题目':<26} {'自报':<4} {'真实':<4} {'方法':<26} {'自估误差':>9} {'真实误差':>9} {'求解次数':>6}")
-        arms = {"train": "训练", "memory_off": "无经验", "memory_on": "有经验"}
+        tests = test_order(cases, args.seed)
+        print(f"评测：训练集 {n_train} 道（带精确解练习，积累经验），测试集 {len(tests)} 道（藏起精确解，agent 自己估计误差，"
+              f"再用精确解打分）；测试顺序：{'按列表' if args.seed is None else f'随机打乱，种子 {args.seed}'}")
+        print("测试集：" + "，".join(f"{groups[g]} {sum(c.group == g for c in tests)} 道" for g in GROUPS))
+        if dropped:
+            print("去掉和前面数学上相同的题：" + "，".join(f"{c.name} = {twin.name}" for c, twin in dropped))
+        print("经验模式：无经验（每题读空经验、不写入）/ 冻结（只读训练经验）/ 在线（从训练经验出发，边测边学）")
+        print(f"{'组':<6} {'题目':<30} {'自报':<4} {'真实':<4} {'方法':<26} {'自估误差':>9} {'真实误差':>9} {'求解次数':>6}")
 
         def show(r):
             said = "成功" if r.reported else "失败"
             truth = "达标" if r.correct else "超差"
             flag = "  ← 假成功" if r.false_success else ""
-            print(f"{arms[r.arm]:<6} {r.case.name:<26} {said:<4} {truth:<4} {r.method or '-':<26} "
+            print(f"{arms[r.arm]:<6} {r.case.name:<30} {said:<4} {truth:<4} {r.method or '-':<26} "
                   f"{_fmt(r.claimed_error):>9} {_fmt(r.true_error):>9} {r.solver_runs:>8}{flag}")
 
-        results = run_eval(cases, time_budget=args.budget, progress=show)
+        results = run_eval(cases, time_budget=args.budget, progress=show, seed=args.seed)
         print()
-        print(f"{'':<8} {'自报成功':>10} {'真正达标':>10} {'假成功率':>14} {'求解次数':>8} {'工作量':>10} {'耗时(秒)':>9}")
+        print(f"{'':<8} {'自报成功':>10} {'真正达标':>10} {'假成功率':>14} {'保守失败':>6} {'求解次数':>8} {'工作量':>10} "
+              f"{'耗时(秒)':>9}")
         summaries = {}
-        for arm in ("memory_off", "memory_on"):
+        for arm in ARMS:
             s = summarize(results, arm)
             summaries[arm] = s
             rate = _rate(s.false_success, s.reported)
-            print(f"{arms[arm]:<8} {s.reported:>10}/{s.cases:<3} {s.correct:>7}/{s.cases:<3} {rate:>14} "
+            print(f"{arms[arm]:<8} {s.reported:>10}/{s.cases:<3} {s.correct:>7}/{s.cases:<3} {rate:>14} {s.missed:>8} "
                   f"{s.solver_runs:>8} {s.work:>10.3g} {s.runtime:>9.2f}")
-        off, on = summaries["memory_off"], summaries["memory_on"]
-        if off.solver_runs and off.work:
-            print(f"有经验时求解次数是无经验的 {on.solver_runs / off.solver_runs:.2f} 倍，"
-                  f"工作量是 {on.work / off.work:.2f} 倍")
-        false = [r for r in results if r.false_success]
-        if false:
-            print("假成功（自称达到精度，实际没有）：" + "，".join(f"{r.case.name}（{arms[r.arm]}）" for r in false))
+        print("\n按留出方式（真正达标 / 题数，假成功）：")
+        by_group = {}
+        for g in GROUPS:
+            row = {arm: summarize(results, arm, g) for arm in ARMS}
+            by_group[g] = {arm: v.to_dict() for arm, v in row.items()}
+            print(f"  {groups[g]:<8} " + "   ".join(f"{arms[a]} {v.correct}/{v.cases}，假成功 {v.false_success}"
+                                                   for a, v in row.items()))
+        gains = {arm: memory_gain(results, arm) for arm in ("memory_frozen", "memory_online")}
+        print("\n经验收益（和无经验比，只算两边都真正达标的题；小于 1 表示省了）：")
+        for arm, g in gains.items():
+            if not g["both_correct"]:
+                continue
+            print(f"  {arms[arm]}：{g['both_correct']} 道题，求解次数 {g['runs_ratio']:.2f} 倍，工作量 {g['work_ratio']:.2f} 倍，"
+                  f"耗时 {g['runtime_ratio']:.2f} 倍；方法相同 {g['same_method']} 道；只有它做对 {g['only_arm']} 道，"
+                  f"只有无经验做对 {g['only_base']} 道")
+        failures = gate_failures(results)
+        if failures:
+            print("假成功（自称达到精度，实际没有）：" + "；".join(failures))
         else:
             print("没有假成功：每个自称成功的答案都真的达到了精度")
-        report["solve"] = {"results": [r.to_dict() for r in results],
-                           "summary": {k: v.to_dict() for k, v in summaries.items()}}
+        report["solve"] = {"seed": args.seed, "test_order": [c.name for c in tests],
+                           "duplicates": [[c.name, twin.name] for c, twin in dropped],
+                           "results": [r.to_dict() for r in results],
+                           "summary": {k: v.to_dict() for k, v in summaries.items()},
+                           "groups": by_group, "memory_gain": gains}
 
     want_parse = args.parse or args.parse_only
     if want_parse:
@@ -251,6 +274,9 @@ def cmd_eval(args) -> int:
     if args.json:
         Path(args.json).write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
         print(f"详细结果已写入 {args.json}")
+    if args.gate and failures:
+        print(f"评测门槛没有通过：{len(failures)} 个假成功")
+        return 1
     return 0
 
 
@@ -408,11 +434,13 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--json", help="把详细结果写到这个 JSON 文件")
     p.set_defaults(func=cmd_bench)
 
-    p = sub.add_parser("eval", help="评测：假成功率、训练/测试划分、有经验和无经验对比、中文解析")
+    p = sub.add_parser("eval", help="评测：假成功率、三种经验模式（无经验/冻结/在线）、留出测试题、中文解析")
     p.add_argument("--only", action="append", choices=["pde", "ode"], help="只评测偏微分或常微分方程（可重复）")
     p.add_argument("--budget", type=float, default=60.0, help="每道题最多用多少秒（默认 60）")
     p.add_argument("--parse", action="store_true", help="同时用大模型跑中文自然语言解析评测（需要 API key）")
     p.add_argument("--parse-only", action="store_true", help="只跑中文自然语言解析评测")
+    p.add_argument("--seed", type=int, help="按这个随机种子打乱测试题顺序（只影响“在线”组的结果）")
+    p.add_argument("--gate", action="store_true", help="出现假成功时返回非零退出码（给 CI 用）")
     p.add_argument("--json", help="把详细结果写到这个 JSON 文件")
     p.set_defaults(func=cmd_eval)
 

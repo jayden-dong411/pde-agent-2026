@@ -206,7 +206,7 @@ def test_install_records_the_exam_version(tmp_path):
     report = ValidationReport(ok=True, message="passed", solver="reaction_diffusion.crank_nicolson",
                               kind="reaction_diffusion", order=2.0)
     path = SkillLibrary(tmp_path).install(SkillCandidate(code=GOOD), report, task)
-    assert json.loads(path.with_suffix(".json").read_text(encoding="utf-8"))["exam_version"] == EXAM_VERSION == 2
+    assert json.loads(path.with_suffix(".json").read_text(encoding="utf-8"))["exam_version"] == EXAM_VERSION == 3
 
 
 def test_old_skills_are_examined_again_and_upgraded(tmp_path):
@@ -215,7 +215,7 @@ def test_old_skills_are_examined_again_and_upgraded(tmp_path):
     agent = PDEAgent(home=tmp_path)
     assert agent.skill_errors == [] and agent.registry.get("reaction_diffusion.crank_nicolson") is not None
     data = json.loads(manifest.read_text(encoding="utf-8"))
-    assert data["exam_version"] == 2
+    assert data["exam_version"] == EXAM_VERSION
     assert data["validation"]["ok"] and len(data["validation"]["cases"]) == 2
 
 
@@ -249,4 +249,4 @@ def test_a_disabled_skill_comes_back_once_its_reason_is_deleted(tmp_path):
     manifest.write_text(json.dumps(data), encoding="utf-8")
     agent = PDEAgent(home=tmp_path)
     assert agent.skill_errors == [] and agent.registry.get("reaction_diffusion.crank_nicolson") is not None
-    assert json.loads(manifest.read_text(encoding="utf-8"))["exam_version"] == 2
+    assert json.loads(manifest.read_text(encoding="utf-8"))["exam_version"] == EXAM_VERSION

@@ -213,6 +213,13 @@ details.more .inner { display: flex; flex-direction: column; gap: 12px; padding-
 .spinner { width: 16px; height: 16px; border: 2px solid currentColor; border-right-color: transparent; border-radius: 50%; animation: spin .8s linear infinite; }
 @keyframes spin { to { transform: rotate(360deg); } }
 .status { font-size: 13px; color: var(--muted); margin: 0; text-align: center; }
+.job { display: flex; flex-direction: column; gap: 8px; padding: 10px 12px; border-radius: var(--r-control); background: var(--accent-soft, rgba(14, 107, 107, .08)); font-size: 13px; }
+.job-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+.job-head span { color: var(--muted); font-variant-numeric: tabular-nums; }
+.cancel { min-height: 36px; padding: 0 14px; border-radius: 10px; border: 1px solid var(--bad); background: transparent; color: var(--bad); font-weight: 600; cursor: pointer; }
+.cancel:disabled { opacity: .5; cursor: wait; }
+.job-log { margin: 0; padding-left: 18px; display: flex; flex-direction: column; gap: 2px; color: var(--muted); overflow-wrap: anywhere; }
+.job-log li:last-child { color: inherit; }
 .alert { margin: 0; padding: 10px 12px; border-radius: var(--r-control); background: var(--bad-soft); color: var(--bad); font-size: 13px; white-space: pre-wrap; overflow-wrap: anywhere; }
 
 /* results */
@@ -568,6 +575,10 @@ y2' = -y1</textarea>
           <span>求解</span>
         </button>
         <p class="status hidden" id="status" role="status"></p>
+        <div class="job hidden" id="job" aria-live="polite">
+          <div class="job-head"><span id="job-time"></span><button type="button" class="cancel" id="cancel">取消</button></div>
+          <ol class="job-log" id="job-log"></ol>
+        </div>
         <p class="alert hidden" id="error" role="alert"></p>
       </div>
     </section>
@@ -908,6 +919,40 @@ const IDEAS = [
   "两端固定的弦，初始位移 sin(πx)，初速度 0，波速 1，求 t = 0.5 时的形状。",
 ];
 
+/* solve jobs: the server solves in a separate process; the page follows its steps and can cancel it */
+let currentJob = null;
+
+function showJob(job) {
+  $("job").classList.toggle("hidden", !job);
+  if (!job) return;
+  $("job-time").textContent = `已用 ${fmt(job.elapsed, 2)} 秒 · 上限 ${fmt(job.timeout)} 秒`;
+  $("job-log").replaceChildren(...job.events.slice(-6).map((e) => el("li", {}, e.text)));
+}
+
+async function follow(job) {
+  currentJob = job.id;
+  $("cancel").disabled = false;
+  try {
+    showJob(job);
+    while (job.state === "running") {
+      await new Promise((r) => setTimeout(r, 400));
+      job = await api(`/api/jobs/${job.id}`);
+      showJob(job);
+    }
+  } finally {
+    currentJob = null;
+    $("job").classList.add("hidden");
+  }
+  if (job.state !== "done") throw new Error(job.error || "求解失败");
+  return job.result;
+}
+
+async function cancelJob() {
+  if (!currentJob) return;
+  $("cancel").disabled = true;
+  try { await api(`/api/jobs/${currentJob}/cancel`, {}); } catch (e) { showError(e.message); }
+}
+
 function showError(message) {
   $("error").textContent = message;
   $("error").classList.toggle("hidden", !message);
@@ -933,7 +978,8 @@ async function run() {
   $("status").textContent = asksModel ? `可能要请 ${info.llm.name} 帮忙，会比较久…` : "";
   $("status").classList.toggle("hidden", !asksModel);
   try {
-    const report = await api(path, body);
+    const started = await api(path, { ...body, async: true });
+    const report = (await follow(started.job)).report;
     showReport(report);
     if (mode === "text") { fillForm(report.problem); asked = true; setMode("text"); }
     loadStats();
@@ -975,7 +1021,7 @@ function showReport(r) {
   const [cls, label] = look[r.status] || look.failed;
   badge.className = "badge " + cls;
   badge.textContent = label;
-  $("result-meta").textContent = `${r.problem.name || r.problem.kind} · 用时 ${fmt(r.runtime)} 秒`;
+  $("result-meta").textContent = `${r.problem.name || r.problem.kind} · ${r.cost_text || `用时 ${fmt(r.runtime)} 秒`}`;
   const message = r.message || "";
   $("message").textContent = message;
   $("message").classList.toggle("hidden", !message);
@@ -1450,10 +1496,22 @@ async function sendChat() {
   $("chat-input").value = "";
   showChat(true);
   try {
-    const reply = await api("/api/chat", { messages: chat.map(({ role, content }) => ({ role, content })) });
-    chat.push({ role: "assistant", content: reply.answer, model: reply.model, solved: !!reply.solve });
+    const reply = await api("/api/chat", { messages: chat.map(({ role, content }) => ({ role, content })), async: true });
+    chat.push({ role: "assistant", content: reply.answer, model: reply.model, solved: !!(reply.solve || reply.job) });
     saveChat();
     showChat(false);
+    if (reply.job) {
+      const last = chat[chat.length - 1];
+      try {
+        const result = await follow(reply.job);
+        last.content = result.chat_text;
+        reply.solve = result.report;
+      } catch (e) {
+        last.content = reply.answer.replace("求解中…", `求解没有完成：${e.message}`);
+      }
+      saveChat();
+      showChat(false);
+    }
     if (reply.solve) {
       showReport(reply.solve);
       try { fillForm(reply.solve.problem); } catch { /* the form keeps what it had */ }
@@ -1580,10 +1638,15 @@ async function init() {
   $("tab-form").addEventListener("click", () => setMode("form"));
   $("tab-text").addEventListener("click", () => setMode("text"));
   $("go").addEventListener("click", run);
+  $("cancel").addEventListener("click", cancelJob);
   if (info.examples.length) { $("preset").value = info.examples[0].name; $("preset").dispatchEvent(new Event("change")); }
   else updateEquation();
   setupChat();
   loadStats();
+  try {  // a solve still running from before a reload: follow it
+    const { job } = await api("/api/jobs/current");
+    if (job) follow(job).then((r) => { showReport(r.report); loadStats(); loadInfo(); }).catch((e) => showError(e.message));
+  } catch { /* nothing to follow */ }
 }
 init();
 </script>

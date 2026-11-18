@@ -31,6 +31,7 @@ import os
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Callable
 
 from .contract import CONTRACT_CHECKS, result_contract
 from .crosscheck import Check, CrossCheck, cross_check
@@ -113,6 +114,11 @@ class SolveReport:
     crosscheck: CrossCheck | None = None  # all verification evidence about the answer (contract + cross-checks)
     check_work: float = 0.0  # work of the extra runs the checks needed
     candidate: bool = False  # an answer met the error target, but a required check could not be done
+    # wall-clock seconds by stage (see ``costs``): features, verification, learning and the whole episode
+    feature_time: float = 0.0
+    check_time: float = 0.0
+    learn_time: float = 0.0
+    total_time: float = 0.0
 
     @property
     def status(self) -> str:
@@ -136,6 +142,39 @@ class SolveReport:
     @property
     def runtime(self) -> float:
         return sum(a.runtime for a in self.attempts)
+
+    def _failed_methods(self) -> set[str]:
+        return {t["method"] for t in self.trials if t.get("outcome") not in ("success", "candidate")}
+
+    def costs(self) -> dict:
+        """Where the episode's time and work went, split by stage.
+
+        ``seconds``: ``total`` (the whole episode, wall clock) = ``features`` (features, resolution floor and
+        cost predictions) + ``solver`` (every solver run, of which ``failed`` in methods that gave up or blew up)
+        + ``verification`` (contract and cross-checks, including their reference runs) + ``learning`` (the
+        language model writing and examining new methods) + ``other``. ``work``: the solver runs' own counts
+        (``solver``, of which ``failed``) and the checks' (``verification``); ``total`` is ``work``.
+        """
+        failed = self._failed_methods()
+        failed_time = sum(a.runtime for a in self.attempts if a.method in failed or a.status in ("unstable", "error"))
+        failed_work = sum(a.work for a in self.attempts if a.method in failed or a.status in ("unstable", "error"))
+        solver_time = self.runtime
+        seconds = {"total": self.total_time, "features": self.feature_time, "solver": solver_time,
+                   "failed": failed_time, "verification": self.check_time, "learning": self.learn_time}
+        seconds["other"] = max(0.0, self.total_time - self.feature_time - solver_time - self.check_time - self.learn_time)
+        solver_work = sum(a.work for a in self.attempts)
+        work = {"total": solver_work + self.check_work, "solver": solver_work, "failed": failed_work,
+                "verification": self.check_work}
+        return {"seconds": {k: round(v, 4) for k, v in seconds.items()}, "work": work,
+                "solver_runs": self.solver_runs, "learning_rounds": sum(o.rounds for o in self.learned)}
+
+    def cost_text(self) -> str:
+        s = self.costs()["seconds"]
+        parts = [f"特征 {s['features']:.2f}", f"求解 {s['solver']:.2f}" + (f"（其中没成功的方法 {s['failed']:.2f}）" if s["failed"] else ""),
+                 f"验证 {s['verification']:.2f}"]
+        if s["learning"]:
+            parts.append(f"学习新方法 {s['learning']:.2f}")
+        return f"用时 {s['total']:.2f} 秒：" + "，".join(parts) + f"，其他 {s['other']:.2f}"
 
     def choice(self) -> str:
         """Why the methods were tried in this order: the problem's features and the cheapest prediction."""
@@ -193,7 +232,16 @@ def observed_rate(d_prev: float, d: float, r_prev: float, r: float) -> float | N
     return 0.5 * (lo + hi)
 
 
+class Cancelled(BaseException):
+    """Raised from a progress callback to stop an episode (a BaseException, so no handler swallows it)."""
+
+
 class PDEAgent:
+    """``progress``: called with a dict for each step of an episode (``stage`` and a Chinese ``text``);
+    the web app shows these while a solve runs and may raise ``Cancelled`` from it to stop."""
+
+    progress: Callable[[dict], None] | None = None
+
     def __init__(
         self,
         home: Path | str | None = None,
@@ -216,14 +264,26 @@ class PDEAgent:
         self.memory = ExperienceStore(self.home / "experience.jsonl" if remember else None,
                                       self.home / "shared_experience.jsonl" if remember else None,
                                       update=remember)
-        self.skills = SkillLibrary(self.home / "skills")
+        self.skills = SkillLibrary(self.home / "skills", timeout=max(30.0, float(time_budget)))
         self.skill_errors = self.skills.load_into(self.registry, self.equations, timeout=self.validation_timeout)
 
     # --- public API ---------------------------------------------------------------
 
+    def _emit(self, stage: str, text: str, **fields) -> None:
+        if self.progress is not None:
+            self.progress({"stage": stage, "text": text, **fields})
+
     def solve(self, problem: PDEProblem, tol: float = 1e-3, options: dict | None = None, learn: bool = True) -> SolveReport:
         if not tol > 0:
             raise ValueError("tol must be positive")
+        started = time.perf_counter()
+        report = self._solve(problem, tol, options, learn, started)
+        report.total_time = time.perf_counter() - started
+        self._remember(report)
+        self._emit("done", report.summary(), status=report.status)
+        return report
+
+    def _solve(self, problem: PDEProblem, tol: float, options: dict | None, learn: bool, started: float) -> SolveReport:
         problem = self.equations.complete(problem)
         report = SolveReport(problem=problem, tol=tol, error_kind="exact" if problem.has_exact() else "estimated")
         eq = self.equations.get(problem.kind)
@@ -236,16 +296,17 @@ class PDEAgent:
             problem, tol, time_order, start, MAX_N[problem.dim])
         if floor is None:
             report.message = f"题目数据在最细网格（n = {MAX_N[problem.dim]}）上也分辨不清，没有求解"
-            self._remember(report)
+            report.feature_time = time.perf_counter() - started
             return report
         report.min_n = floor
         report.features = extract(problem, floor)
+        report.feature_time = time.perf_counter() - started
+        self._emit("features", f"题目特征：{report.features.describe()}")
         candidates = self.registry.for_problem(problem)
         can_learn = learn and self.brain is not None
 
         if not candidates and can_learn:
-            outcome = self.learn(problem, reason="no method covers this problem class yet")
-            report.learned.append(outcome)
+            outcome = self._timed_learn(report, problem, "no method covers this problem class yet")
             if outcome.success:
                 report.problem = problem = self.equations.complete(problem)
                 candidates = self.registry.for_problem(problem)
@@ -259,12 +320,19 @@ class PDEAgent:
         else:
             self._run_methods(report, candidates, options)
             if not report.success and can_learn and not report.learned:
-                outcome = self.learn(problem, reason=f"existing methods failed: {report.message}")
-                report.learned.append(outcome)
+                outcome = self._timed_learn(report, problem, f"existing methods failed: {report.message}")
                 if outcome.success:
                     self._run_methods(report, [self.registry.get(outcome.solver)], options)
-        self._remember(report)
         return report
+
+    def _timed_learn(self, report: SolveReport, problem: PDEProblem, reason: str) -> LearnOutcome:
+        start = time.perf_counter()
+        try:
+            outcome = self.learn(problem, reason=reason)
+        finally:
+            report.learn_time += time.perf_counter() - start
+        report.learned.append(outcome)
+        return outcome
 
     def ask(self, text: str, tol: float = 1e-3) -> SolveReport:
         """Solve a problem described in natural language (needs a language model)."""
@@ -286,11 +354,15 @@ class PDEAgent:
         session = self.brain.skill_session(task)
         report = None
         for round_ in range(1, max_rounds + 1):
+            self._emit("learn", f"请大模型写新方法（第 {round_} 轮）", round=round_)
             try:
                 candidate = session.propose()
             except LLMError as exc:
                 return LearnOutcome(False, rounds=round_, report=report, message=str(exc))
+            self._emit("exam", "考试中：用构造解检查收敛阶", round=round_)
             report = validate_candidate(candidate, task, timeout=self.validation_timeout)
+            self._emit("exam", "考试通过" if report.ok else f"考试没通过：{report.message[:200]}", round=round_,
+                       ok=report.ok)
             if report.ok:
                 path = self.skills.install(candidate, report, task, origin=getattr(self.brain, "provider", "llm"))
                 try:
@@ -308,6 +380,7 @@ class PDEAgent:
     def _run_methods(self, report: SolveReport, candidates: list[SolverSpec], options: dict | None) -> None:
         deadline = time.monotonic() + self.time_budget
         report.message = ""
+        predicting = time.perf_counter()
         if report.features is not None:
             for spec in candidates:
                 report.predictions[spec.name] = predict(
@@ -317,6 +390,7 @@ class PDEAgent:
             for name, cal in measured.items():
                 if name in report.predictions:
                     calibrate(report.predictions[name], cal.ratio, cal.neighbours)
+        report.feature_time += time.perf_counter() - predicting
         tags = report.features.tags if report.features else None
         predicted = {name: p.work for name, p in report.predictions.items()}
         for spec in self.memory.rank(report.problem.signature(), candidates, self.explore, predicted, tags):
@@ -328,7 +402,9 @@ class PDEAgent:
                 report.trials.append({"method": spec.name, "outcome": "skipped", "n": None, "error": None,
                                       "error_kind": report.error_kind, "work": 0.0})
                 continue
+            self._emit("method", f"试 {spec.name}", method=spec.name)
             outcome, n, error, work = self._try_method(spec, report, options, deadline)
+            self._emit("outcome", f"{spec.name}：{OUTCOMES.get(outcome, outcome)}", method=spec.name, outcome=outcome)
             report.trials.append({
                 "method": spec.name, "outcome": outcome, "n": n, "error": error,
                 "error_kind": report.error_kind, "work": work,
@@ -375,13 +451,17 @@ class PDEAgent:
         for _ in range(self.max_runs_per_method):
             if time.monotonic() > deadline:
                 return "budget", n, error, work
+            self._emit("run", f"{spec.name} 在 n = {n} 上求解", method=spec.name, n=n)
+            ran = time.perf_counter()
             try:
                 result = spec.run(problem, n, options)
             except SolverDiverged as exc:
-                report.attempts.append(Attempt(spec.name, n, "unstable", message=str(exc)))
+                report.attempts.append(Attempt(spec.name, n, "unstable", runtime=time.perf_counter() - ran,
+                                               message=str(exc)))
                 return "unstable", n, None, work
             except Exception as exc:
-                report.attempts.append(Attempt(spec.name, n, "error", message=f"{type(exc).__name__}: {exc}"[:300]))
+                report.attempts.append(Attempt(spec.name, n, "error", runtime=time.perf_counter() - ran,
+                                               message=f"{type(exc).__name__}: {exc}"[:300]))
                 return "error", n, None, work
             work += result.work
             if norm == "l1":
@@ -420,6 +500,10 @@ class PDEAgent:
             report.attempts.append(Attempt(
                 spec.name, n, "ok" if error is not None else "unverified", error, result.work, result.runtime,
             ))
+            if error is not None:
+                how = "误差" if not estimated else "误差估计"
+                self._emit("error", f"{spec.name} n = {n}：{how} {error:.2e}（目标 {target:.2g}）", method=spec.name, n=n,
+                           error=error)
 
             met = error is not None and error <= target and (confirmed or not adaptive)
             if adaptive:
@@ -429,11 +513,15 @@ class PDEAgent:
                 # an error that meets the target says the answer converged, not that it answers this problem:
                 # check the problem's own conditions, and (without an exact solution) the answer itself
                 equation = self.equations.get(problem.kind)
+                self._emit("verify", f"{spec.name} n = {n} 达到精度，检查题目条件" + ("和交叉验证" if estimated else ""),
+                           method=spec.name, n=n)
+                checking = time.perf_counter()
                 checked = result_contract(equation, spec, problem, result, tol, options)
                 if estimated:
                     checked = checked.merge(cross_check(equation, spec, problem, result, tol, options))
                 else:
                     checked.checks.insert(0, Check("exact", error, target, True, "终止时刻与精确解的相对误差"))
+                report.check_time += time.perf_counter() - checking
                 report.check_work += checked.work
                 work += checked.work
                 report.crosscheck = checked
@@ -496,4 +584,5 @@ class PDEAgent:
             "tags": list(report.features.tags) if report.features else [],
             "features": report.features.to_dict() if report.features else None,
             "crosscheck": report.crosscheck.to_dict() if report.crosscheck else None,
+            "costs": report.costs(),
         })

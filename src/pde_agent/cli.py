@@ -104,6 +104,7 @@ def cmd_solve(args) -> int:
     if report.choice():
         print(report.choice())
     print(report.summary())
+    print(report.cost_text())
     return EXIT_CODES[report.status]
 
 
@@ -117,6 +118,7 @@ def cmd_ask(args) -> int:
     if p.description:
         print(f"假设：{p.description}")
     print(report.summary())
+    print(report.cost_text())
     return EXIT_CODES[report.status]
 
 
@@ -380,7 +382,8 @@ def cmd_app(args) -> int:
 
     agent = _agent(args)
     try:
-        serve(AppState(agent, args.llm, args.model), args.port, open_browser=not args.no_browser)
+        serve(AppState(agent, args.llm, args.model, job_timeout=args.timeout), args.port,
+              open_browser=not args.no_browser)
     except OSError as exc:
         print(f"无法在端口 {args.port} 启动：{exc}（换一个端口：--port 8766）", file=sys.stderr)
         return 1
@@ -468,6 +471,7 @@ def main(argv: list[str] | None = None) -> int:
     p = sub.add_parser("app", help="打开网页版（只在本机可访问）")
     p.add_argument("--port", type=int, default=8765)
     p.add_argument("--no-browser", action="store_true", help="不自动打开浏览器")
+    p.add_argument("--timeout", type=float, default=600.0, help="一次求解最多多少秒，超时停止（默认 600）")
     p.set_defaults(func=cmd_app)
 
     args = parser.parse_args(argv)

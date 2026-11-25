@@ -9,7 +9,7 @@
 | Poisson（1D、2D，Dirichlet 边界） | `-k Δu = f` | `poisson.fd2` 中心差分 + 稀疏直接解（2） |
 | 热方程（1D，Dirichlet） | `u_t = α u_xx + f` | `heat.ftcs` 显式（2）、`heat.backward_euler`（1）、`heat.crank_nicolson`（2）、`heat.bdf2`（2，L-稳定，初值有间断时不振荡）；隐式格式的三对角 LU 分解按网格和步长缓存复用（v2.3.0） |
 | 对流方程（1D，周期边界） | `u_t + c u_x = f` | `advection.upwind`（1）、`advection.lax_wendroff`（2）、`advection.rk4_central4`（4，方法线）；有间断时另有 `advection.muscl`（2）、`advection.weno5`（3） |
-| 无黏 Burgers（1D，周期或 Dirichlet） | `u_t + (u²/2)_x = f` | 有限体积激波捕捉：`burgers_inviscid.rusanov`（1）、`burgers_inviscid.muscl`（2，minmod 限制器）、`burgers_inviscid.weno5`（3）；时间步按每一步的当前波速定（v2.3.0） |
+| 无黏 Burgers（1D，周期或 Dirichlet） | `u_t + (u²/2)_x = f` | 有限体积激波捕捉：`burgers_inviscid.rusanov`（1）、`burgers_inviscid.muscl`（2，minmod 限制器）、`burgers_inviscid.weno5`（3）；时间步按每一步的当前波速定（v2.3.0）；激波题先在 n = 32、64 上试算，按实测误差挑最省的格式（v2.4.0） |
 | 波动方程（1D，Dirichlet） | `u_tt = c² u_xx + f` | `wave.leapfrog`（2） |
 | 常微分方程组（初值问题） | `y' = f(t, y)` | 显式：`ode.euler`（1）、`ode.heun`（2）、`ode.rk4`（4）、`ode.verlet`（2，辛方法）、`ode.rk45`（自适应）；隐式：`ode.backward_euler`（1）、`ode.trapezoid`（2）、`ode.bdf2`（2）、`ode.radau`、`ode.bdf`（自适应） |
 

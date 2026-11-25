@@ -44,9 +44,14 @@ from .skills import SkillLibrary, SkillTask, ValidationReport, validate_candidat
 from .solvers import builtin_registry
 from .solvers.base import SolverDiverged, SolveResult, SolverSpec
 from .solvers.pinn import diagnostics_text
-from .verify import OSCILLATION_LIMIT, error_norm, exact_error, new_extrema, relative_error, resolution_floor, restrict
+from .verify import (OSCILLATION_LIMIT, error_norm, exact_error, new_extrema, relative_error, resolution_floor, restrict,
+                     weak_solution)
 
 ROUGH_SAFETY = 2.0  # an estimated error on non-smooth data must be below tol / ROUGH_SAFETY
+# shock problems: methods are compared by trial runs on PILOT_N and 2 PILOT_N (``PDEAgent._pilot``), each
+# allowed only if both runs cost at most PILOT_SHARE of the cheapest predicted solve
+PILOT_N = 32
+PILOT_SHARE = 0.15
 
 # for ODEs (dim 0) n is the number of time steps, or sets the tolerance of an adaptive method
 BASE_N = {0: 16, 1: 16, 2: 8, 3: 4}
@@ -392,6 +397,8 @@ class PDEAgent:
                 if name in report.predictions:
                     calibrate(report.predictions[name], cal.ratio, cal.neighbours)
         report.feature_time += time.perf_counter() - predicting
+        if report.features is not None and weak_solution(report.problem):
+            self._pilot(report, candidates, options)
         tags = report.features.tags if report.features else None
         predicted = {name: p.work for name, p in report.predictions.items()}
         for spec in self.memory.rank(report.problem.signature(), candidates, self.explore, predicted, tags):
@@ -421,6 +428,77 @@ class PDEAgent:
                 return
         tried = "；".join(f"{t['method']} {OUTCOMES[t['outcome']]}" for t in report.trials)
         report.message = f"没有方法达到精度 {report.tol:g}（{tried or '时间预算用完'}）"
+
+    def _pilot(self, report: SolveReport, candidates: list[SolverSpec], options: dict | None) -> None:
+        """Measure each shock-capturing method's error on two coarse grids and predict its grid from that.
+
+        Past a shock every scheme converges at first order in L1, so the cost model's order says nothing
+        about which scheme is cheaper: the constant in front decides, and it depends on the problem. Rusanov
+        smears smooth parts as well as the shock; on a Riemann problem (flat states around the shock) that
+        costs it about a factor 2 in error against MUSCL or WENO5, on smooth data that break into a shock up
+        to a factor 10, and its work per grid is about 7 times smaller. So each candidate runs at ``n0`` and
+        ``2 n0``; the error (exact) or the difference of the two (estimate) sets the grid for the tolerance,
+        and the cost model prices that grid. A method is piloted only when its two runs cost at most
+        ``PILOT_SHARE`` of the cheapest predicted solve (on an easy problem the cheapest method is right
+        anyway), and only when at least two methods qualify (there is nothing to compare otherwise).
+        """
+        problem, tol = report.problem, report.tol
+        max_n = MAX_N[problem.dim]
+        n0 = max(PILOT_N, report.min_n)
+        priced = [(spec, report.predictions.get(spec.name)) for spec in candidates]
+        priced = [(s, p) for s, p in priced if p is not None and p.work is not None and math.isfinite(p.work)
+                  and s.cost is not None and "nonoscillatory" in s.traits and "neural" not in s.traits]
+        if len(priced) < 2 or 2 * n0 > max_n:
+            return
+        cheapest = min(p.work for _, p in priced)
+        pilots = [(s, p) for s, p in priced if s.cost(problem, n0) + s.cost(problem, 2 * n0) <= PILOT_SHARE * cheapest]
+        if len(pilots) < 2:
+            return
+        estimated = report.error_kind == "estimated"
+        target = tol / ROUGH_SAFETY if estimated and not report.features.smooth else tol
+        norm = error_norm(problem)
+        for spec, prediction in pilots:
+            self._emit("pilot", f"{spec.name} 在 n = {n0}、{2 * n0} 上试算，量出误差常数", method=spec.name, n=n0)
+            runs = []
+            for n in (n0, 2 * n0):
+                ran = time.perf_counter()
+                try:
+                    result = spec.run(problem, n, options)
+                except Exception as exc:  # the method's own trial will meet (and report) the same failure
+                    report.attempts.append(Attempt(spec.name, n, "pilot", runtime=time.perf_counter() - ran,
+                                                   message=f"试算出错：{type(exc).__name__}"))
+                    break
+                report.attempts.append(Attempt(spec.name, n, "pilot", None, result.work, result.runtime, message="试算"))
+                runs.append(result)
+            if len(runs) < 2:
+                continue
+            overshoot = [new_extrema(problem, r) for r in runs]
+            if any(o is not None and o > OSCILLATION_LIMIT for o in overshoot):
+                continue  # no clean measurement: the feature prediction stands
+            if estimated:
+                diff = relative_error(runs[0].u, restrict(runs[1], n0), norm)
+                error, order = diff / (2.0**prediction.order - 1.0), prediction.order
+            else:
+                coarse, error = exact_error(problem, runs[0]), exact_error(problem, runs[1])
+                seen = math.log2(coarse / error) if coarse and error and coarse > 0 and error > 0 else prediction.order
+                order = min(max(0.5, seen), max(prediction.order, 1.0))
+            if error is None or not math.isfinite(error):
+                continue
+            report.attempts[-1].error = error
+            factor = max(1.0, error / target) ** (1.0 / order)
+            needed = 2 * n0 * 2 ** max(0, math.ceil(math.log2(factor) - 1e-9))
+            n = min(needed, max_n)
+            # priced on the continuous grid, not the rounded one: the estimate is good to a factor of about 2,
+            # and rounding it up to the next power of two would decide close calls by noise. An explicit 1-D
+            # scheme's work grows as n^2 (cells times CFL-limited steps)
+            work = spec.cost(problem, 2 * n0) * factor**2
+            scale = prediction.work / prediction.model_work if prediction.model_work else 1.0
+            # an exact error on two grids is a measurement: start on the grid itself. A difference of two coarse
+            # answers overstates the error about twofold (not yet asymptotic): start one grid coarser
+            start = n // 2 if estimated else n
+            prediction.n, prediction.start, prediction.order = n, max(report.min_n, start), order
+            prediction.model_work, prediction.work, prediction.piloted = work, work * scale, True
+            prediction.notes.append(f"试算 n = {2 * n0} 误差约 {error:.2g}，按 {order:.2g} 阶需要 n ≈ {needed}")
 
     def _try_method(self, spec: SolverSpec, report: SolveReport, options: dict | None, deadline: float):
         problem, tol = report.problem, report.tol

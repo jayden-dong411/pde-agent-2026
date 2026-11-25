@@ -107,6 +107,7 @@ class Prediction:
     notes: list[str] = field(default_factory=list)
     model_work: float | None = None  # the cost model's own figure, before the history's correction
     measured: int = 0  # similar past problems the correction comes from (0: none)
+    piloted: bool = False  # the grid comes from trial runs on two coarse grids (``PDEAgent._pilot``)
 
 
 def _finest_wavenumber(problem: PDEProblem) -> float:
